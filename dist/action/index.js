@@ -30044,16 +30044,17 @@ function runChecks(references, flags) {
             });
         }
         else if (flag.archived) {
-            findings.push({ severity: "error", kind: "archived", key, message: "Archived, but still used", references: refs });
+            findings.push({ severity: "error", kind: "archived", key, flagId: flag.id, message: "Archived, but still used", references: refs });
         }
         else if (!flag.active) {
-            findings.push({ severity: "warning", kind: "disabled", key, message: "Disabled, so it always evaluates to false", references: refs });
+            findings.push({ severity: "warning", kind: "disabled", key, flagId: flag.id, message: "Disabled, so it always evaluates to false", references: refs });
         }
         else if (flag.stale) {
             findings.push({
                 severity: "warning",
                 kind: "stale",
                 key,
+                flagId: flag.id,
                 message: "Looks stale (fully rolled out or not evaluated in 30+ days). Consider removing it",
                 references: refs,
             });
@@ -30357,7 +30358,8 @@ function renderMarkdown(findings, references, context) {
     lines.push(`${counts.filter(Boolean).join(", ")} in ${scope}`, "", "| | Flag | Problem | Where |", "|---|---|---|---|");
     for (const finding of [...errors, ...warnings]) {
         const icon = finding.severity === "error" ? "❌" : "⚠️";
-        const flag = code(finding.key ?? finding.references[0].expression);
+        const name = code(finding.key ?? finding.references[0].expression);
+        const flag = finding.flagId === undefined ? name : `[${name}](${flagsUrl}/${finding.flagId})`;
         const where = finding.references.map((r) => location(r, context)).join(", ");
         lines.push(`| ${icon} | ${flag} | ${cell(finding.message)} | ${where} |`);
     }

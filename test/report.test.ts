@@ -34,7 +34,7 @@ describe("renderMarkdown", () => {
       | | Flag | Problem | Where |
       |---|---|---|---|
       | ❌ | \`new-chekout\` | Doesn't exist. Did you mean \`new-checkout\`? | [\`src/Checkout.tsx:42\`](https://github.com/o/r/blob/abc1234def/src/Checkout.tsx#L42) |
-      | ❌ | \`old-banner\` | Archived, but still used | [\`src/Home.tsx:17\`](https://github.com/o/r/blob/abc1234def/src/Home.tsx#L17), [\`src/Nav.tsx:8\`](https://github.com/o/r/blob/abc1234def/src/Nav.tsx#L8) |
+      | ❌ | [\`old-banner\`](https://us.posthog.com/project/1/feature_flags/2) | Archived, but still used | [\`src/Home.tsx:17\`](https://github.com/o/r/blob/abc1234def/src/Home.tsx#L17), [\`src/Nav.tsx:8\`](https://github.com/o/r/blob/abc1234def/src/Nav.tsx#L8) |
       | ⚠️ | \`\` \`exp-\${x}\` \`\` | Dynamic key, can't be checked | [\`src/exp.ts:3\`](https://github.com/o/r/blob/abc1234def/src/exp.ts#L3) |
 
       [Create missing flags in PostHog](https://us.posthog.com/project/1/feature_flags/new) · [View flags](https://us.posthog.com/project/1/feature_flags)

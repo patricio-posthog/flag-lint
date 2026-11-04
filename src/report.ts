@@ -34,7 +34,8 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
   lines.push(`${counts.filter(Boolean).join(", ")} in ${scope}`, "", "| | Flag | Problem | Where |", "|---|---|---|---|");
   for (const finding of [...errors, ...warnings]) {
     const icon = finding.severity === "error" ? "❌" : "⚠️";
-    const flag = code(finding.key ?? finding.references[0].expression);
+    const name = code(finding.key ?? finding.references[0].expression);
+    const flag = finding.flagId === undefined ? name : `[${name}](${flagsUrl}/${finding.flagId})`;
     const where = finding.references.map((r) => location(r, context)).join(", ");
     lines.push(`| ${icon} | ${flag} | ${cell(finding.message)} | ${where} |`);
   }
