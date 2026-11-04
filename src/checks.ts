@@ -5,7 +5,7 @@ export type Severity = "error" | "warning";
 
 export interface Finding {
   severity: Severity;
-  kind: "missing" | "archived" | "dynamic";
+  kind: "missing" | "archived" | "disabled" | "stale" | "dynamic";
   key: string | null;
   message: string;
   references: FlagReference[];
@@ -28,6 +28,16 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
       });
     } else if (flag.archived) {
       findings.push({ severity: "error", kind: "archived", key, message: "Archived, but still used", references: refs });
+    } else if (!flag.active) {
+      findings.push({ severity: "warning", kind: "disabled", key, message: "Disabled, so it always evaluates to false", references: refs });
+    } else if (flag.stale) {
+      findings.push({
+        severity: "warning",
+        kind: "stale",
+        key,
+        message: "Looks stale (fully rolled out or not evaluated in 30+ days). Consider removing it",
+        references: refs,
+      });
     }
   }
 

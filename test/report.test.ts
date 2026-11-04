@@ -22,8 +22,8 @@ describe("renderMarkdown", () => {
       ref(null, "src/exp.ts", 3, "`exp-${x}`"),
     ];
     const flags = [
-      { id: 1, key: "new-checkout", active: true, archived: false },
-      { id: 2, key: "old-banner", active: true, archived: true },
+      { id: 1, key: "new-checkout", active: true, archived: false, stale: false },
+      { id: 2, key: "old-banner", active: true, archived: true, stale: false },
     ];
     expect(renderMarkdown(runChecks(references, flags), references, context)).toMatchInlineSnapshot(`
       "<!-- flag-lint -->

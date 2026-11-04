@@ -11,7 +11,7 @@ const ref = (key: string | null, line = 1): FlagReference => ({
   line,
   column: 1,
 });
-const flag = (key: string, archived = false): Flag => ({ id: 1, key, active: true, archived });
+const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, ...extra });
 
 describe("runChecks", () => {
   it("reports missing flags once per key with every reference", () => {
@@ -33,6 +33,14 @@ describe("runChecks", () => {
 
   it("reports archived flags", () => {
     expect(runChecks([ref("old")], [flag("old", true)])).toMatchObject([{ kind: "archived", severity: "error" }]);
+  });
+
+  it("warns about disabled and stale flags without failing", () => {
+    const findings = runChecks([ref("off"), ref("old")], [flag("off", false, { active: false }), flag("old", false, { stale: true })]);
+    expect(findings).toMatchObject([
+      { kind: "disabled", severity: "warning", key: "off" },
+      { kind: "stale", severity: "warning", key: "old" },
+    ]);
   });
 
   it("passes flags that exist", () => {

@@ -35,6 +35,18 @@ function runChecks(references, flags) {
         else if (flag.archived) {
             findings.push({ severity: "error", kind: "archived", key, message: "Archived, but still used", references: refs });
         }
+        else if (!flag.active) {
+            findings.push({ severity: "warning", kind: "disabled", key, message: "Disabled, so it always evaluates to false", references: refs });
+        }
+        else if (flag.stale) {
+            findings.push({
+                severity: "warning",
+                kind: "stale",
+                key,
+                message: "Looks stale (fully rolled out or not evaluated in 30+ days). Consider removing it",
+                references: refs,
+            });
+        }
     }
     for (const ref of references.filter((r) => r.key === null)) {
         findings.push({
@@ -321,11 +333,17 @@ function pythonStringValue(node) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchFlags = fetchFlags;
 // The list endpoint hides archived flags unless `archived` is passed, so fetch both sets.
+// Staleness comes from PostHog's own `active=STALE` filter rather than being recomputed here.
 async function fetchFlags(config) {
-    const [live, archived] = await Promise.all([fetchAll(config, ""), fetchAll(config, "&archived=true")]);
+    const [live, archived, stale] = await Promise.all([
+        fetchAll(config, ""),
+        fetchAll(config, "&archived=true"),
+        fetchAll(config, "&active=STALE"),
+    ]);
+    const staleKeys = new Set(stale.map((f) => f.key));
     const byKey = new Map();
     for (const flag of [...live, ...archived])
-        byKey.set(flag.key, flag);
+        byKey.set(flag.key, { ...flag, stale: staleKeys.has(flag.key) });
     return [...byKey.values()];
 }
 async function fetchAll(config, extraQuery) {
@@ -340,7 +358,7 @@ async function fetchAll(config, extraQuery) {
         }
         const page = (await response.json());
         for (const f of page.results) {
-            flags.push({ id: f.id, key: f.key, active: Boolean(f.active), archived: Boolean(f.archived) });
+            flags.push({ id: f.id, key: f.key, active: Boolean(f.active), archived: Boolean(f.archived), stale: false });
         }
         url = page.next;
     }
