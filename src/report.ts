@@ -57,6 +57,29 @@ export function renderText(findings: Finding[], scannedReferences: number): stri
   );
 }
 
+export interface Annotation {
+  severity: "error" | "warning";
+  title: string;
+  message: string;
+  file: string;
+  line: number;
+  column: number;
+}
+
+// One annotation per reference, so each call site gets marked in the PR's "Files changed" tab.
+export function annotations(findings: Finding[]): Annotation[] {
+  return findings.flatMap((f) =>
+    f.references.map((r) => ({
+      severity: f.severity,
+      title: `PostHog flag: ${f.key ?? r.expression}`,
+      message: f.message.replace(/`/g, ""),
+      file: r.file,
+      line: r.line,
+      column: r.column,
+    })),
+  );
+}
+
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }

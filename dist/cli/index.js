@@ -377,6 +377,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.COMMENT_MARKER = void 0;
 exports.renderMarkdown = renderMarkdown;
 exports.renderText = renderText;
+exports.annotations = annotations;
 exports.COMMENT_MARKER = "<!-- flag-lint -->";
 function renderMarkdown(findings, references, context) {
     const host = context.host.replace(/\/+$/, "");
@@ -418,6 +419,17 @@ function renderText(findings, scannedReferences) {
         return [head, ...f.references.map((r) => `    ${r.file}:${r.line}`)].join("\n");
     })
         .join("\n") + "\n");
+}
+// One annotation per reference, so each call site gets marked in the PR's "Files changed" tab.
+function annotations(findings) {
+    return findings.flatMap((f) => f.references.map((r) => ({
+        severity: f.severity,
+        title: `PostHog flag: ${f.key ?? r.expression}`,
+        message: f.message.replace(/`/g, ""),
+        file: r.file,
+        line: r.line,
+        column: r.column,
+    })));
 }
 function plural(count, noun) {
     return `${count} ${noun}${count === 1 ? "" : "s"}`;

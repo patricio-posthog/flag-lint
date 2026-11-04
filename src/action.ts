@@ -3,7 +3,7 @@ import * as github from "@actions/github";
 import { runChecks } from "./checks";
 import { languageFor } from "./extract";
 import { fetchFlags } from "./posthog";
-import { COMMENT_MARKER, renderMarkdown } from "./report";
+import { annotations, COMMENT_MARKER, renderMarkdown } from "./report";
 import { listFiles, scan } from "./scan";
 
 async function run() {
@@ -13,6 +13,7 @@ async function run() {
   const wrappers = core.getInput("wrappers").split(",").map((w) => w.trim()).filter(Boolean);
   const failOnError = core.getBooleanInput("fail-on-error");
   const shouldComment = core.getBooleanInput("comment");
+  const shouldAnnotate = core.getBooleanInput("annotations");
   const token = core.getInput("github-token");
   core.setSecret(apiKey);
 
@@ -38,6 +39,12 @@ async function run() {
 
   await core.summary.addRaw(body).write();
   if (pr && shouldComment) await upsertComment(octokit, owner, repo, pr.number, body);
+  if (shouldAnnotate) {
+    for (const a of annotations(findings)) {
+      const props = { title: a.title, file: a.file, startLine: a.line, startColumn: a.column };
+      a.severity === "error" ? core.error(a.message, props) : core.warning(a.message, props);
+    }
+  }
 
   const errors = findings.filter((f) => f.severity === "error").length;
   if (errors > 0 && failOnError) core.setFailed(`flag-lint found ${errors} problem(s) with feature flags`);

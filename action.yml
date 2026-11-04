@@ -19,6 +19,9 @@ inputs:
   comment:
     description: Leave a comment on the pull request
     default: "true"
+  annotations:
+    description: Mark each problem on the changed line in the PR diff
+    default: "true"
   github-token:
     description: Token used to read the PR and comment on it
     default: ${{ github.token }}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runChecks } from "../src/checks";
 import type { FlagReference } from "../src/extract";
-import { renderMarkdown } from "../src/report";
+import { annotations, renderMarkdown } from "../src/report";
 
 const ref = (key: string | null, file: string, line: number, expression = `"${key}"`): FlagReference => ({
   key,
@@ -53,5 +53,17 @@ describe("renderMarkdown", () => {
 
   it("says so when the PR has no flag references", () => {
     expect(renderMarkdown([], [], context)).toContain("No feature flag references in the changed files.");
+  });
+});
+
+describe("annotations", () => {
+  it("marks every reference with plain-text messages", () => {
+    const references = [ref("old", "src/a.ts", 3), ref("old", "src/b.ts", 7), ref(null, "src/c.ts", 1, "flagName")];
+    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false }];
+    expect(annotations(runChecks(references, flags))).toEqual([
+      { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/a.ts", line: 3, column: 1 },
+      { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/b.ts", line: 7, column: 1 },
+      { severity: "warning", title: "PostHog flag: flagName", message: "Dynamic key, can't be checked", file: "src/c.ts", line: 1, column: 1 },
+    ]);
   });
 });
