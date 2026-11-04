@@ -28,12 +28,12 @@ function runChecks(references, flags) {
                 severity: "error",
                 kind: "missing",
                 key,
-                message: suggestion ? `doesn't exist in this project. Did you mean \`${suggestion}\`?` : "doesn't exist in this project.",
+                message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
                 references: refs,
             });
         }
         else if (flag.archived) {
-            findings.push({ severity: "error", kind: "archived", key, message: "is archived but still used in code.", references: refs });
+            findings.push({ severity: "error", kind: "archived", key, message: "Archived, but still used", references: refs });
         }
     }
     for (const ref of references.filter((r) => r.key === null)) {
@@ -41,7 +41,7 @@ function runChecks(references, flags) {
             severity: "warning",
             kind: "dynamic",
             key: null,
-            message: `\`${ref.expression}\` isn't a string literal, so it can't be checked.`,
+            message: "Dynamic key, can't be checked",
             references: [ref],
         });
     }
@@ -127,7 +127,7 @@ async function main() {
     const flags = await (0, posthog_1.fetchFlags)({ host: values.host, projectId: values["project-id"], apiKey });
     const findings = (0, checks_1.runChecks)(references, flags);
     process.stdout.write(values.format === "markdown"
-        ? (0, report_1.renderMarkdown)(findings, references.length, { host: values.host, projectId: values["project-id"] })
+        ? (0, report_1.renderMarkdown)(findings, references, { host: values.host, projectId: values["project-id"] })
         : (0, report_1.renderText)(findings, references.length));
     process.exit(findings.some((f) => f.severity === "error") ? 1 : 0);
 }
@@ -360,43 +360,60 @@ exports.COMMENT_MARKER = void 0;
 exports.renderMarkdown = renderMarkdown;
 exports.renderText = renderText;
 exports.COMMENT_MARKER = "<!-- flag-lint -->";
-function renderMarkdown(findings, scannedReferences, context) {
-    const lines = [exports.COMMENT_MARKER, "### flag-lint", ""];
+function renderMarkdown(findings, references, context) {
+    const host = context.host.replace(/\/+$/, "");
+    const flagsUrl = `${host}/project/${context.projectId}/feature_flags`;
     const errors = findings.filter((f) => f.severity === "error");
     const warnings = findings.filter((f) => f.severity === "warning");
-    if (findings.length === 0) {
-        lines.push(scannedReferences === 0
-            ? "No feature flag references in the changed files."
-            : `All ${scannedReferences} feature flag reference${scannedReferences === 1 ? "" : "s"} match your PostHog project. ✅`);
+    const files = new Set(references.map((r) => r.file)).size;
+    const scope = `${plural(references.length, "flag reference")} across ${plural(files, "file")}`;
+    const footer = `<sub>flag-lint · hackathon project${context.sha ? ` · updated for commit \`${context.sha.slice(0, 7)}\`` : ""}</sub>`;
+    const lines = [exports.COMMENT_MARKER, "### 🚩 PostHog feature flags", ""];
+    if (references.length === 0) {
+        lines.push("No feature flag references in the changed files.", "", footer);
         return lines.join("\n") + "\n";
     }
+    if (findings.length === 0) {
+        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
+        return lines.join("\n") + "\n";
+    }
+    const counts = [errors.length && `**${plural(errors.length, "problem")}**`, warnings.length && plural(warnings.length, "warning")];
+    lines.push(`${counts.filter(Boolean).join(", ")} in ${scope}`, "", "| | Flag | Problem | Where |", "|---|---|---|---|");
     for (const finding of [...errors, ...warnings]) {
         const icon = finding.severity === "error" ? "❌" : "⚠️";
-        const subject = finding.key === null ? "Dynamic flag key:" : `\`${finding.key}\``;
-        lines.push(`${icon} ${subject} ${finding.message}`);
-        for (const ref of finding.references)
-            lines.push(`  - ${location(ref, context)}`);
+        const flag = code(finding.key ?? finding.references[0].expression);
+        const where = finding.references.map((r) => location(r, context)).join(", ");
+        lines.push(`| ${icon} | ${flag} | ${cell(finding.message)} | ${where} |`);
     }
-    const missing = errors.filter((f) => f.kind === "missing" && f.key);
-    if (missing.length > 0) {
-        const host = context.host.replace(/\/+$/, "");
-        lines.push("", `[Create a feature flag in PostHog](${host}/project/${context.projectId}/feature_flags/new)`);
-    }
+    const links = [`[View flags](${flagsUrl})`];
+    if (errors.some((f) => f.kind === "missing"))
+        links.unshift(`[Create missing flags in PostHog](${flagsUrl}/new)`);
+    lines.push("", links.join(" · "), "", footer);
     return lines.join("\n") + "\n";
 }
 function renderText(findings, scannedReferences) {
     if (findings.length === 0)
-        return `flag-lint: ${scannedReferences} reference(s) checked, no problems found.\n`;
+        return `flag-lint: ${plural(scannedReferences, "reference")} checked, no problems found.\n`;
     return (findings
         .map((f) => {
-        const head = `${f.severity.toUpperCase()} ${f.key ?? "(dynamic)"}: ${f.message.replace(/`/g, "")}`;
+        const head = `${f.severity.toUpperCase()} ${f.key ?? f.references[0].expression}: ${f.message.replace(/`/g, "")}`;
         return [head, ...f.references.map((r) => `    ${r.file}:${r.line}`)].join("\n");
     })
         .join("\n") + "\n");
 }
+function plural(count, noun) {
+    return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+// Inline code that survives backticks in the content (e.g. template literals).
+function code(text) {
+    return cell(text.includes("`") ? `\`\` ${text} \`\`` : `\`${text}\``);
+}
+function cell(text) {
+    return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
 function location(ref, context) {
-    const label = `${ref.file}:${ref.line}`;
-    return context.blobUrl ? `[\`${label}\`](${context.blobUrl}/${ref.file}#L${ref.line})` : `\`${label}\``;
+    const label = `\`${ref.file}:${ref.line}\``;
+    return context.blobUrl ? `[${label}](${context.blobUrl}/${ref.file}#L${ref.line})` : label;
 }
 
 

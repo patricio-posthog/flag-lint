@@ -23,11 +23,11 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
         severity: "error",
         kind: "missing",
         key,
-        message: suggestion ? `doesn't exist in this project. Did you mean \`${suggestion}\`?` : "doesn't exist in this project.",
+        message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
         references: refs,
       });
     } else if (flag.archived) {
-      findings.push({ severity: "error", kind: "archived", key, message: "is archived but still used in code.", references: refs });
+      findings.push({ severity: "error", kind: "archived", key, message: "Archived, but still used", references: refs });
     }
   }
 
@@ -36,7 +36,7 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
       severity: "warning",
       kind: "dynamic",
       key: null,
-      message: `\`${ref.expression}\` isn't a string literal, so it can't be checked.`,
+      message: "Dynamic key, can't be checked",
       references: [ref],
     });
   }

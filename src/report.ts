@@ -8,50 +8,69 @@ export interface ReportContext {
   projectId: string;
   // Used to link file:line references in a PR comment, e.g. https://github.com/o/r/blob/<sha>
   blobUrl?: string;
+  sha?: string;
 }
 
-export function renderMarkdown(findings: Finding[], scannedReferences: number, context: ReportContext): string {
-  const lines = [COMMENT_MARKER, "### flag-lint", ""];
+export function renderMarkdown(findings: Finding[], references: FlagReference[], context: ReportContext): string {
+  const host = context.host.replace(/\/+$/, "");
+  const flagsUrl = `${host}/project/${context.projectId}/feature_flags`;
   const errors = findings.filter((f) => f.severity === "error");
   const warnings = findings.filter((f) => f.severity === "warning");
+  const files = new Set(references.map((r) => r.file)).size;
+  const scope = `${plural(references.length, "flag reference")} across ${plural(files, "file")}`;
+  const footer = `<sub>flag-lint · hackathon project${context.sha ? ` · updated for commit \`${context.sha.slice(0, 7)}\`` : ""}</sub>`;
+  const lines = [COMMENT_MARKER, "### 🚩 PostHog feature flags", ""];
 
+  if (references.length === 0) {
+    lines.push("No feature flag references in the changed files.", "", footer);
+    return lines.join("\n") + "\n";
+  }
   if (findings.length === 0) {
-    lines.push(
-      scannedReferences === 0
-        ? "No feature flag references in the changed files."
-        : `All ${scannedReferences} feature flag reference${scannedReferences === 1 ? "" : "s"} match your PostHog project. ✅`,
-    );
+    lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
     return lines.join("\n") + "\n";
   }
 
+  const counts = [errors.length && `**${plural(errors.length, "problem")}**`, warnings.length && plural(warnings.length, "warning")];
+  lines.push(`${counts.filter(Boolean).join(", ")} in ${scope}`, "", "| | Flag | Problem | Where |", "|---|---|---|---|");
   for (const finding of [...errors, ...warnings]) {
     const icon = finding.severity === "error" ? "❌" : "⚠️";
-    const subject = finding.key === null ? "Dynamic flag key:" : `\`${finding.key}\``;
-    lines.push(`${icon} ${subject} ${finding.message}`);
-    for (const ref of finding.references) lines.push(`  - ${location(ref, context)}`);
+    const flag = code(finding.key ?? finding.references[0].expression);
+    const where = finding.references.map((r) => location(r, context)).join(", ");
+    lines.push(`| ${icon} | ${flag} | ${cell(finding.message)} | ${where} |`);
   }
 
-  const missing = errors.filter((f) => f.kind === "missing" && f.key);
-  if (missing.length > 0) {
-    const host = context.host.replace(/\/+$/, "");
-    lines.push("", `[Create a feature flag in PostHog](${host}/project/${context.projectId}/feature_flags/new)`);
-  }
+  const links = [`[View flags](${flagsUrl})`];
+  if (errors.some((f) => f.kind === "missing")) links.unshift(`[Create missing flags in PostHog](${flagsUrl}/new)`);
+  lines.push("", links.join(" · "), "", footer);
   return lines.join("\n") + "\n";
 }
 
 export function renderText(findings: Finding[], scannedReferences: number): string {
-  if (findings.length === 0) return `flag-lint: ${scannedReferences} reference(s) checked, no problems found.\n`;
+  if (findings.length === 0) return `flag-lint: ${plural(scannedReferences, "reference")} checked, no problems found.\n`;
   return (
     findings
       .map((f) => {
-        const head = `${f.severity.toUpperCase()} ${f.key ?? "(dynamic)"}: ${f.message.replace(/`/g, "")}`;
+        const head = `${f.severity.toUpperCase()} ${f.key ?? f.references[0].expression}: ${f.message.replace(/`/g, "")}`;
         return [head, ...f.references.map((r) => `    ${r.file}:${r.line}`)].join("\n");
       })
       .join("\n") + "\n"
   );
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// Inline code that survives backticks in the content (e.g. template literals).
+function code(text: string): string {
+  return cell(text.includes("`") ? `\`\` ${text} \`\`` : `\`${text}\``);
+}
+
+function cell(text: string): string {
+  return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
 function location(ref: FlagReference, context: ReportContext): string {
-  const label = `${ref.file}:${ref.line}`;
-  return context.blobUrl ? `[\`${label}\`](${context.blobUrl}/${ref.file}#L${ref.line})` : `\`${label}\``;
+  const label = `\`${ref.file}:${ref.line}\``;
+  return context.blobUrl ? `[${label}](${context.blobUrl}/${ref.file}#L${ref.line})` : label;
 }
