@@ -1,0 +1,27 @@
+name: flag-lint
+description: Check pull requests for PostHog feature flags that don't match your PostHog project
+inputs:
+  api-key:
+    description: PostHog personal API key with feature_flag:read
+    required: true
+  project-id:
+    description: PostHog project ID
+    required: true
+  host:
+    description: PostHog host (https://us.posthog.com, https://eu.posthog.com or your own)
+    default: https://us.posthog.com
+  wrappers:
+    description: Comma-separated names of your own functions that take a flag key as the first argument
+    default: ""
+  fail-on-error:
+    description: Fail the check when a flag is missing or archived
+    default: "true"
+  comment:
+    description: Leave a comment on the pull request
+    default: "true"
+  github-token:
+    description: Token used to read the PR and comment on it
+    default: ${{ github.token }}
+runs:
+  using: node20
+  main: dist/action/index.js
