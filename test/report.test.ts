@@ -102,30 +102,3 @@ describe("finding links", () => {
     );
   });
 });
-
-describe("flag summary", () => {
-  const base = { active: true, archived: false, stale: false, variants: null, evaluationRuntime: "all", runningExperiments: [] };
-  const summaryLine = (markdown: string) => markdown.split("\n").find((l) => l.startsWith("**Flags in this PR:**"));
-
-  it("lists every flag the PR touches on one line, flags that need attention first", () => {
-    const references = [ref("on", "a.ts", 1), ref("on", "b.ts", 2), ref("multi", "a.ts", 3), ref("srv", "a.py", 4), ref("old", "a.ts", 5), ref("missing", "a.ts", 6), ref(null, "a.ts", 7, "flagName")];
-    const flags = [
-      { ...base, id: 1, key: "on" },
-      { ...base, id: 2, key: "multi", runningExperiments: [{ id: 9, name: "Exp" }] },
-      { ...base, id: 3, key: "srv", active: false },
-      { ...base, id: 4, key: "old", archived: true },
-    ];
-    const url = "https://us.posthog.com/project/1/feature_flags";
-    expect(summaryLine(renderMarkdown(runChecks(references, flags), references, { ...context, flags }))).toBe(
-      `**Flags in this PR:** ❔ \`missing\` · 📦 [\`old\`](${url}/4) · ⚪ [\`srv\`](${url}/3) · 🟢 [\`multi\`](${url}/2) 🧪 · 🟢 [\`on\`](${url}/1)`,
-    );
-  });
-
-  it("also shows when every flag matches", () => {
-    const flags = [{ ...base, id: 1, key: "on" }];
-    const ok = [ref("on", "a.ts", 1)];
-    const markdown = renderMarkdown(runChecks(ok, flags), ok, { ...context, flags });
-    expect(markdown).toContain("✅ The flag reference matches your PostHog project.");
-    expect(summaryLine(markdown)).toBe("**Flags in this PR:** 🟢 [`on`](https://us.posthog.com/project/1/feature_flags/1)");
-  });
-});

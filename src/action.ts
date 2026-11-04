@@ -35,7 +35,7 @@ async function run() {
   const findings = runChecks(references, flags);
   const sha = pr?.head.sha ?? github.context.sha;
   const blobUrl = `${github.context.serverUrl}/${owner}/${repo}/blob/${sha}`;
-  const body = renderMarkdown(findings, references, { host, projectId, blobUrl, sha, flags });
+  const body = renderMarkdown(findings, references, { host, projectId, blobUrl, sha });
 
   await core.summary.addRaw(body).write();
   if (pr && shouldComment) await upsertComment(octokit, owner, repo, pr.number, body);

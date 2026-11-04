@@ -219,7 +219,7 @@ async function main() {
     const flags = await (0, posthog_1.fetchFlags)({ host: values.host, projectId: values["project-id"], apiKey });
     const findings = (0, checks_1.runChecks)(references, flags);
     process.stdout.write(values.format === "markdown"
-        ? (0, report_1.renderMarkdown)(findings, references, { host: values.host, projectId: values["project-id"], flags })
+        ? (0, report_1.renderMarkdown)(findings, references, { host: values.host, projectId: values["project-id"] })
         : (0, report_1.renderText)(findings, references.length));
     process.exit(findings.some((f) => f.severity === "error") ? 1 : 0);
 }
@@ -601,9 +601,8 @@ function renderMarkdown(findings, references, context) {
         lines.push("No feature flag references in the changed files.", "", footer);
         return lines.join("\n") + "\n";
     }
-    const summary = flagSummary(references, context, flagsUrl);
     if (findings.length === 0) {
-        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...summary, footer);
+        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
         return lines.join("\n") + "\n";
     }
     const counts = [errors.length && `**${plural(errors.length, "problem")}**`, warnings.length && plural(warnings.length, "warning")];
@@ -620,29 +619,8 @@ function renderMarkdown(findings, references, context) {
         ];
         lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
     }
-    lines.push("", `[View flags](${flagsUrl})`, "", ...summary, footer);
+    lines.push("", `[View flags](${flagsUrl})`, "", footer);
     return lines.join("\n") + "\n";
-}
-// One line listing every flag the PR touches with its state, so a reviewer sees what the change
-// affects even when nothing is wrong. Flags that need attention come first.
-const STATUS_ORDER = ["❔", "📦", "⚪", "🟢"];
-function flagSummary(references, context, flagsUrl) {
-    if (!context.flags)
-        return [];
-    const keys = [...new Set(references.flatMap((r) => (r.key === null ? [] : [r.key])))];
-    if (keys.length === 0)
-        return [];
-    const byKey = new Map(context.flags.map((f) => [f.key, f]));
-    const items = keys.map((key) => {
-        const flag = byKey.get(key);
-        if (!flag)
-            return { key, icon: "❔", text: code(key) };
-        const icon = flag.archived ? "📦" : flag.active ? "🟢" : "⚪";
-        const experiment = flag.runningExperiments.length ? " 🧪" : "";
-        return { key, icon, text: `[${code(key)}](${flagsUrl}/${flag.id})${experiment}` };
-    });
-    items.sort((a, b) => STATUS_ORDER.indexOf(a.icon) - STATUS_ORDER.indexOf(b.icon) || a.key.localeCompare(b.key));
-    return [`**Flags in this PR:** ${items.map((i) => `${i.icon} ${i.text}`).join(" · ")}`, ""];
 }
 function renderText(findings, scannedReferences) {
     if (findings.length === 0)
