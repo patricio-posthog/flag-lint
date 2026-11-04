@@ -10,6 +10,7 @@ const ref = (key: string | null, file: string, line: number, expression = `"${ke
   file,
   line,
   column: 1,
+  variants: [],
 });
 const context = { host: "https://us.posthog.com/", projectId: "1", blobUrl: "https://github.com/o/r/blob/abc1234def", sha: "abc1234def" };
 
@@ -22,8 +23,8 @@ describe("renderMarkdown", () => {
       ref(null, "src/exp.ts", 3, "`exp-${x}`"),
     ];
     const flags = [
-      { id: 1, key: "new-checkout", active: true, archived: false, stale: false },
-      { id: 2, key: "old-banner", active: true, archived: true, stale: false },
+      { id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null },
+      { id: 2, key: "old-banner", active: true, archived: true, stale: false, variants: null },
     ];
     expect(renderMarkdown(runChecks(references, flags), references, context)).toMatchInlineSnapshot(`
       "<!-- flag-lint -->
@@ -59,7 +60,7 @@ describe("renderMarkdown", () => {
 describe("annotations", () => {
   it("marks every reference with plain-text messages", () => {
     const references = [ref("old", "src/a.ts", 3), ref("old", "src/b.ts", 7), ref(null, "src/c.ts", 1, "flagName")];
-    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false }];
+    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false, variants: null }];
     expect(annotations(runChecks(references, flags))).toEqual([
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/a.ts", line: 3, column: 1 },
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/b.ts", line: 7, column: 1 },

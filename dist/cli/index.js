@@ -48,6 +48,8 @@ function runChecks(references, flags) {
                 references: refs,
             });
         }
+        if (flag && !flag.archived)
+            findings.push(...variantFindings(flag, refs));
     }
     for (const ref of references.filter((r) => r.key === null)) {
         findings.push({
@@ -59,6 +61,42 @@ function runChecks(references, flags) {
         });
     }
     return findings;
+}
+// Compares the variant names used in code with the flag's real variants. Each finding points at
+// the comparison itself, not the call, so the annotation lands on the line with the wrong name.
+function variantFindings(flag, refs) {
+    const unknown = new Map();
+    for (const ref of refs) {
+        for (const use of ref.variants) {
+            if (flag.variants?.includes(use.value))
+                continue;
+            const at = { ...ref, line: use.line, column: use.column };
+            unknown.set(use.value, [...(unknown.get(use.value) ?? []), at]);
+        }
+    }
+    return [...unknown].map(([value, at]) => {
+        if (flag.variants === null) {
+            return {
+                severity: "warning",
+                kind: "variant",
+                key: flag.key,
+                flagId: flag.id,
+                message: `Boolean flag compared to \`${value}\`, which never matches`,
+                references: at,
+            };
+        }
+        const suggestion = closestKey(value, flag.variants);
+        return {
+            severity: "error",
+            kind: "variant",
+            key: flag.key,
+            flagId: flag.id,
+            message: suggestion
+                ? `Variant \`${value}\` doesn't exist. Did you mean \`${suggestion}\`?`
+                : `Variant \`${value}\` doesn't exist. Variants: ${flag.variants.map((v) => `\`${v}\``).join(", ")}`,
+            references: at,
+        };
+    });
 }
 function groupByKey(references) {
     const groups = new Map();
@@ -186,6 +224,8 @@ const PY_METHODS = [
 // Snapshot API from evaluateFlags(). The names are generic, so only match them as method calls.
 const JS_SNAPSHOT_METHODS = ["isEnabled", "getFlag", "getPayload"];
 const PY_SNAPSHOT_METHODS = ["is_enabled", "get_flag", "get_payload"];
+// Calls whose return value is the variant name, so comparisons against them are worth checking.
+const VARIANT_METHODS = new Set(["getFeatureFlag", "useFeatureFlagVariantKey", "getFlag", "get_feature_flag", "get_flag"]);
 const EXTENSIONS = {
     ".ts": "typescript",
     ".mts": "typescript",
@@ -236,8 +276,10 @@ async function extractReferences(source, file, options = {}) {
             const ref = isPython
                 ? pythonCall(node, methods, snapshotMethods)
                 : jsCall(node, methods, snapshotMethods);
-            if (ref)
-                references.push({ ...ref, file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+            if (ref) {
+                const variants = VARIANT_METHODS.has(ref.method) ? variantUses(node, isPython) : [];
+                references.push({ ...ref, variants, file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+            }
         }
         else if (!isPython && (node.type === "jsx_opening_element" || node.type === "jsx_self_closing_element")) {
             const ref = jsxFeature(node);
@@ -282,17 +324,115 @@ function jsStringValue(node) {
 function jsxFeature(node) {
     if (node.childForFieldName("name")?.text !== "PostHogFeature")
         return null;
+    let match = null;
+    const variants = [];
     for (const attr of node.namedChildren) {
         if (attr.type !== "jsx_attribute")
             continue;
         const [name, value] = attr.namedChildren;
-        if (name?.text !== "flag" || !value)
+        if (!value)
             continue;
-        // flag="key" or flag={"key"}
+        // flag="key" or flag={"key"}; same for match="variant" (match={true} is the boolean form)
         const inner = value.type === "jsx_expression" ? value.namedChildren[0] : value;
-        return { method: "PostHogFeature", key: inner ? jsStringValue(inner) : null, expression: value.text };
+        const literal = inner ? jsStringValue(inner) : null;
+        if (name?.text === "flag")
+            match = { method: "PostHogFeature", key: literal, expression: value.text, variants };
+        if (name?.text === "match" && literal !== null)
+            variants.push(variantUse(literal, inner));
     }
-    return null;
+    return match;
+}
+function variantUse(value, node) {
+    return { value, line: node.startPosition.row + 1, column: node.startPosition.column + 1 };
+}
+const sameNode = (a, b) => !!a && a.startIndex === b.startIndex && a.endIndex === b.endIndex && a.type === b.type;
+// Strings the flag's value gets compared to, either directly (`getFeatureFlag("k") === "a"`,
+// `switch`/`match` on the call) or through a variable assigned from the call in the same function.
+function variantUses(call, isPython) {
+    const value = unwrap(call);
+    const uses = comparisons(value, isPython);
+    const parent = value.parent;
+    let name = null;
+    if (parent?.type === "variable_declarator" && sameNode(parent.childForFieldName("value"), value)) {
+        name = parent.childForFieldName("name");
+    }
+    else if ((parent?.type === "assignment" || parent?.type === "assignment_expression") && sameNode(parent.childForFieldName("right"), value)) {
+        name = parent.childForFieldName("left");
+    }
+    if (name?.type === "identifier") {
+        const scope = enclosingScope(value, isPython);
+        const visit = (node) => {
+            if (node.type === "identifier" && node.text === name.text && !sameNode(node, name)) {
+                uses.push(...comparisons(unwrap(node), isPython));
+            }
+            for (const child of node.namedChildren)
+                visit(child);
+        };
+        visit(scope);
+    }
+    const seen = new Set();
+    return uses.filter((u) => {
+        const id = `${u.value}:${u.line}:${u.column}`;
+        return seen.has(id) ? false : (seen.add(id), true);
+    });
+}
+// Climb through wrappers that don't change the value: `await x`, `(x)`, `x!`.
+function unwrap(node) {
+    let current = node;
+    while (current.parent &&
+        ["await_expression", "await", "parenthesized_expression", "non_null_expression"].includes(current.parent.type)) {
+        current = current.parent;
+    }
+    return current;
+}
+function enclosingScope(node, isPython) {
+    const scopes = isPython
+        ? ["function_definition", "module"]
+        : ["function_declaration", "function_expression", "function", "arrow_function", "method_definition", "program"];
+    let current = node.parent;
+    while (current && !scopes.includes(current.type))
+        current = current.parent;
+    return current ?? node.tree.rootNode;
+}
+function comparisons(value, isPython) {
+    const parent = value.parent;
+    if (!parent)
+        return [];
+    const strings = (nodes) => nodes.flatMap((n) => {
+        const literal = n ? (isPython ? pythonStringValue(n) : jsStringValue(n)) : null;
+        return literal === null ? [] : [variantUse(literal, n)];
+    });
+    if (!isPython) {
+        if (parent.type === "binary_expression" && ["===", "==", "!==", "!="].includes(parent.childForFieldName("operator")?.text ?? "")) {
+            const other = sameNode(parent.childForFieldName("left"), value) ? parent.childForFieldName("right") : parent.childForFieldName("left");
+            return strings([other]);
+        }
+        // switch (x) parses as switch_statement > parenthesized_expression > x, which unwrap() already climbed.
+        if (parent.type === "switch_statement" && sameNode(parent.childForFieldName("value"), value)) {
+            const cases = parent.childForFieldName("body")?.namedChildren.filter((c) => c.type === "switch_case") ?? [];
+            return strings(cases.map((c) => c.childForFieldName("value")));
+        }
+        return [];
+    }
+    if (parent.type === "comparison_operator") {
+        const operators = parent.children.filter((c) => !c.isNamed()).map((c) => c.text);
+        if (!operators.some((op) => ["==", "!=", "in", "not in", "not"].includes(op)))
+            return [];
+        return parent.namedChildren
+            .filter((c) => !sameNode(c, value))
+            .flatMap((c) => (["tuple", "list", "set"].includes(c.type) ? strings(c.namedChildren) : strings([c])));
+    }
+    if (parent.type === "match_statement" && sameNode(parent.childForFieldName("subject"), value)) {
+        const patterns = parent.descendantsOfType("case_pattern").filter((p) => sameNode(enclosingMatch(p), parent));
+        return patterns.flatMap((p) => strings(p.namedChildren.flatMap((c) => (c.type === "union_pattern" ? c.namedChildren : [c]))));
+    }
+    return [];
+}
+function enclosingMatch(node) {
+    let current = node.parent;
+    while (current && current.type !== "match_statement")
+        current = current.parent;
+    return current;
 }
 function pythonCall(node, methods, snapshotMethods) {
     const fn = node.childForFieldName("function");
@@ -359,7 +499,15 @@ async function fetchAll(config, extraQuery) {
         }
         const page = (await response.json());
         for (const f of page.results) {
-            flags.push({ id: f.id, key: f.key, active: Boolean(f.active), archived: Boolean(f.archived), stale: false });
+            const variants = f.filters?.multivariate?.variants;
+            flags.push({
+                id: f.id,
+                key: f.key,
+                active: Boolean(f.active),
+                archived: Boolean(f.archived),
+                stale: false,
+                variants: Array.isArray(variants) ? variants.map((v) => v.key) : null,
+            });
         }
         url = page.next;
     }

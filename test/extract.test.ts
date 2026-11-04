@@ -49,3 +49,28 @@ describe("extractReferences", () => {
     expect(await extractReferences('isFeatureEnabled("x")', "README.md")).toEqual([]);
   });
 });
+
+describe("variant comparisons", () => {
+  const variants = async (name: string) =>
+    Object.fromEntries(
+      (await extractReferences(fixture(name), name))
+        .filter((r) => r.variants.length > 0)
+        .map((r) => [r.key, r.variants.map((v) => `${v.value}@${v.line}`)]),
+    );
+
+  it("follows comparisons, switch and PostHogFeature match in TS", async () => {
+    expect(await variants("variants.tsx")).toEqual({
+      layout: ["compact@3", "wide@4", "grid@6", "list@8"],
+      direct: ["a@11"],
+      tema: ["retro@14"],
+      snapshot: ["on@19"],
+    });
+  });
+
+  it("follows comparisons, `in` and match/case in Python", async () => {
+    expect(await variants("variants.py")).toEqual({
+      layout: ["compact@3", "wide@5", "grid@5"],
+      tema: ["retro@9", "moderna@11", "clasica@11"],
+    });
+  });
+});

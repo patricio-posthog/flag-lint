@@ -5,7 +5,7 @@ export type Severity = "error" | "warning";
 
 export interface Finding {
   severity: Severity;
-  kind: "missing" | "archived" | "disabled" | "stale" | "dynamic";
+  kind: "missing" | "archived" | "disabled" | "stale" | "variant" | "dynamic";
   key: string | null;
   // Set when the flag exists in PostHog, to link to it.
   flagId?: number;
@@ -42,6 +42,7 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
         references: refs,
       });
     }
+    if (flag && !flag.archived) findings.push(...variantFindings(flag, refs));
   }
 
   for (const ref of references.filter((r) => r.key === null)) {
@@ -54,6 +55,42 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
     });
   }
   return findings;
+}
+
+// Compares the variant names used in code with the flag's real variants. Each finding points at
+// the comparison itself, not the call, so the annotation lands on the line with the wrong name.
+function variantFindings(flag: Flag, refs: FlagReference[]): Finding[] {
+  const unknown = new Map<string, FlagReference[]>();
+  for (const ref of refs) {
+    for (const use of ref.variants) {
+      if (flag.variants?.includes(use.value)) continue;
+      const at = { ...ref, line: use.line, column: use.column };
+      unknown.set(use.value, [...(unknown.get(use.value) ?? []), at]);
+    }
+  }
+  return [...unknown].map(([value, at]): Finding => {
+    if (flag.variants === null) {
+      return {
+        severity: "warning",
+        kind: "variant",
+        key: flag.key,
+        flagId: flag.id,
+        message: `Boolean flag compared to \`${value}\`, which never matches`,
+        references: at,
+      };
+    }
+    const suggestion = closestKey(value, flag.variants);
+    return {
+      severity: "error",
+      kind: "variant",
+      key: flag.key,
+      flagId: flag.id,
+      message: suggestion
+        ? `Variant \`${value}\` doesn't exist. Did you mean \`${suggestion}\`?`
+        : `Variant \`${value}\` doesn't exist. Variants: ${flag.variants.map((v) => `\`${v}\``).join(", ")}`,
+      references: at,
+    };
+  });
 }
 
 function groupByKey(references: FlagReference[]): Map<string, FlagReference[]> {

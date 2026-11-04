@@ -4,6 +4,8 @@ export interface Flag {
   active: boolean;
   archived: boolean;
   stale: boolean;
+  // Variant keys for multivariate flags, null for boolean ones.
+  variants: string[] | null;
 }
 
 export interface PostHogConfig {
@@ -38,7 +40,15 @@ async function fetchAll(config: PostHogConfig, extraQuery: string): Promise<Flag
     }
     const page = (await response.json()) as { results: any[]; next: string | null };
     for (const f of page.results) {
-      flags.push({ id: f.id, key: f.key, active: Boolean(f.active), archived: Boolean(f.archived), stale: false });
+      const variants = f.filters?.multivariate?.variants;
+      flags.push({
+        id: f.id,
+        key: f.key,
+        active: Boolean(f.active),
+        archived: Boolean(f.archived),
+        stale: false,
+        variants: Array.isArray(variants) ? variants.map((v: { key: string }) => v.key) : null,
+      });
     }
     url = page.next;
   }
