@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runChecks } from "../src/checks";
 import type { FlagReference } from "../src/extract";
+import { releaseSummary } from "../src/posthog";
 import { annotations, renderMarkdown } from "../src/report";
 
 const ref = (key: string | null, file: string, line: number, expression = `"${key}"`): FlagReference => ({
@@ -24,8 +25,8 @@ describe("renderMarkdown", () => {
       ref(null, "src/exp.ts", 3, "`exp-${x}`"),
     ];
     const flags = [
-      { id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] },
-      { id: 2, key: "old-banner", active: true, archived: true, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] },
+      { id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], release: "100% of users" },
+      { id: 2, key: "old-banner", active: true, archived: true, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], release: "100% of users" },
     ];
     expect(renderMarkdown(runChecks(references, flags), references, context)).toMatchInlineSnapshot(`
       "<!-- flag-lint -->
@@ -61,7 +62,7 @@ describe("renderMarkdown", () => {
 describe("annotations", () => {
   it("marks every reference with plain-text messages", () => {
     const references = [ref("old", "src/a.ts", 3), ref("old", "src/b.ts", 7), ref(null, "src/c.ts", 1, "flagName")];
-    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] }];
+    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], release: "100% of users" }];
     expect(annotations(runChecks(references, flags))).toEqual([
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/a.ts", line: 3, column: 1 },
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/b.ts", line: 7, column: 1 },
@@ -88,7 +89,7 @@ describe("create links", () => {
 
   it("doesn't offer to create a likely typo", () => {
     const references = [ref("new-chekout", "src/a.ts", 1)];
-    const flags = [{ id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] }];
+    const flags = [{ id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], release: "100% of users" }];
     expect(renderMarkdown(runChecks(references, flags), references, context)).not.toContain("Create it");
   });
 });
@@ -96,9 +97,57 @@ describe("create links", () => {
 describe("finding links", () => {
   it("renders extra links next to the problem", () => {
     const references = [ref("exp", "src/a.ts", 1)];
-    const flags = [{ id: 3, key: "exp", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [{ id: 12, name: "New checkout" }] }];
+    const flags = [{ id: 3, key: "exp", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [{ id: 12, name: "New checkout" }], release: "100% of users" }];
     expect(renderMarkdown(runChecks(references, flags), references, context)).toContain(
       '| ⚠️ | [`exp`](https://us.posthog.com/project/1/feature_flags/3) | Drives the running experiment "New checkout". Changing this code can skew the results · [View New checkout →](https://us.posthog.com/project/1/experiments/12) |',
     );
+  });
+});
+
+describe("flag summary", () => {
+  const base = { active: true, archived: false, stale: false, variants: null, evaluationRuntime: "all", runningExperiments: [], release: "100% of users" };
+
+  it("lists every flag the PR touches with its current state", () => {
+    const references = [ref("on", "a.ts", 1), ref("on", "b.ts", 2), ref("multi", "a.ts", 3), ref("srv", "a.py", 4), ref("missing", "a.ts", 5), ref(null, "a.ts", 6, "flagName")];
+    const flags = [
+      { ...base, id: 1, key: "on", release: "20% of users" },
+      { ...base, id: 2, key: "multi", variants: ["control", "test"], runningExperiments: [{ id: 9, name: "Exp" }] },
+      { ...base, id: 3, key: "srv", active: false, evaluationRuntime: "server" },
+    ];
+    const markdown = renderMarkdown(runChecks(references, flags), references, { ...context, flags });
+    const summary = markdown.slice(markdown.indexOf("<details>"), markdown.indexOf("</details>"));
+    expect(summary.split("\n")).toEqual([
+      "<details>",
+      "<summary>Flags in this PR (4)</summary>",
+      "",
+      "| Flag | Status | Type | Release | Used in |",
+      "|---|---|---|---|---|",
+      "| [`on`](https://us.posthog.com/project/1/feature_flags/1) | On | Boolean | 20% of users | 2 places |",
+      "| [`multi`](https://us.posthog.com/project/1/feature_flags/2) | On · 🧪 experiment running | Multivariate (2 variants) | 100% of users | 1 place |",
+      "| [`srv`](https://us.posthog.com/project/1/feature_flags/3) | Off | Boolean | 100% of users · server only | 1 place |",
+      "| `missing` | Not in PostHog | | | 1 place |",
+      "",
+      "",
+    ]);
+  });
+
+  it("also shows when every flag matches", () => {
+    const references = [ref("on", "a.ts", 1)];
+    const flags = [{ ...base, id: 1, key: "on" }];
+    const markdown = renderMarkdown(runChecks(references, flags), references, { ...context, flags });
+    expect(markdown).toContain("✅ The flag reference matches your PostHog project.");
+    expect(markdown).toContain("<summary>Flags in this PR (1)</summary>");
+  });
+});
+
+describe("releaseSummary", () => {
+  it.each([
+    [[], "No release conditions"],
+    [[{ properties: [], rollout_percentage: 20 }], "20% of users"],
+    [[{ properties: [], rollout_percentage: null }], "100% of users"],
+    [[{ properties: [{ key: "email" }], rollout_percentage: 50 }], "50% of matching users"],
+    [[{ properties: [] }, { properties: [] }], "2 condition sets"],
+  ])("describes %j", (groups, expected) => {
+    expect(releaseSummary(groups)).toBe(expected);
   });
 });

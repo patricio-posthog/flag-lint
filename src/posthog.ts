@@ -9,6 +9,8 @@ export interface Flag {
   // "client" or "server" when the flag is limited to one kind of SDK; "all" or null otherwise.
   evaluationRuntime: string | null;
   runningExperiments: { id: number; name: string }[];
+  // Short description of who gets the flag, e.g. "20% of users" or "3 condition sets".
+  release: string;
 }
 
 export interface PostHogConfig {
@@ -55,9 +57,18 @@ async function fetchAll(config: PostHogConfig, extraQuery: string): Promise<Flag
         runningExperiments: (f.experiment_set_metadata ?? [])
           .filter((e: { is_running: boolean }) => e.is_running)
           .map((e: { id: number; name: string }) => ({ id: e.id, name: e.name })),
+        release: releaseSummary(f.filters?.groups),
       });
     }
     url = page.next;
   }
   return flags;
+}
+
+export function releaseSummary(groups: unknown): string {
+  if (!Array.isArray(groups) || groups.length === 0) return "No release conditions";
+  if (groups.length > 1) return `${groups.length} condition sets`;
+  const [group] = groups as { properties?: unknown[]; rollout_percentage?: number | null }[];
+  const rollout = group.rollout_percentage ?? 100;
+  return group.properties?.length ? `${rollout}% of matching users` : `${rollout}% of users`;
 }

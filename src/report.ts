@@ -1,5 +1,6 @@
 import type { Finding } from "./checks";
 import type { FlagReference } from "./extract";
+import type { Flag } from "./posthog";
 
 export const COMMENT_MARKER = "<!-- flag-lint -->";
 
@@ -9,6 +10,8 @@ export interface ReportContext {
   // Used to link file:line references in a PR comment, e.g. https://github.com/o/r/blob/<sha>
   blobUrl?: string;
   sha?: string;
+  // The project's flags, for the summary of every flag the PR touches.
+  flags?: Flag[];
 }
 
 export function renderMarkdown(findings: Finding[], references: FlagReference[], context: ReportContext): string {
@@ -25,8 +28,9 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
     lines.push("No feature flag references in the changed files.", "", footer);
     return lines.join("\n") + "\n";
   }
+  const summary = flagSummary(references, context.flags, flagsUrl);
   if (findings.length === 0) {
-    lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
+    lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...summary, footer);
     return lines.join("\n") + "\n";
   }
 
@@ -45,8 +49,45 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
     lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
   }
 
-  lines.push("", `[View flags](${flagsUrl})`, "", footer);
+  lines.push("", `[View flags](${flagsUrl})`, "", ...summary, footer);
   return lines.join("\n") + "\n";
+}
+
+// Collapsed table of every flag the PR touches and its current state, so a reviewer sees what
+// the change affects even when nothing is wrong.
+function flagSummary(references: FlagReference[], flags: Flag[] | undefined, flagsUrl: string): string[] {
+  if (!flags) return [];
+  const uses = new Map<string, number>();
+  for (const ref of references) if (ref.key !== null) uses.set(ref.key, (uses.get(ref.key) ?? 0) + 1);
+  if (uses.size === 0) return [];
+
+  const byKey = new Map(flags.map((f) => [f.key, f]));
+  const rows = [...uses].map(([key, count]) => {
+    const flag = byKey.get(key);
+    const usedIn = plural(count, "place");
+    if (!flag) return `| ${code(key)} | Not in PostHog | | | ${usedIn} |`;
+    const status = [
+      flag.archived ? "Archived" : flag.active ? "On" : "Off",
+      ...(flag.runningExperiments.length ? ["🧪 experiment running"] : []),
+    ].join(" · ");
+    const type = flag.variants ? `Multivariate (${flag.variants.length} variants)` : "Boolean";
+    const release = [
+      flag.release,
+      ...(flag.evaluationRuntime === "client" || flag.evaluationRuntime === "server" ? [`${flag.evaluationRuntime} only`] : []),
+    ].join(" · ");
+    return `| [${code(key)}](${flagsUrl}/${flag.id}) | ${status} | ${type} | ${release} | ${usedIn} |`;
+  });
+  return [
+    "<details>",
+    `<summary>Flags in this PR (${uses.size})</summary>`,
+    "",
+    "| Flag | Status | Type | Release | Used in |",
+    "|---|---|---|---|---|",
+    ...rows,
+    "",
+    "</details>",
+    "",
+  ];
 }
 
 export function renderText(findings: Finding[], scannedReferences: number): string {

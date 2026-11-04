@@ -36,7 +36,7 @@ async function main() {
 
   process.stdout.write(
     values.format === "markdown"
-      ? renderMarkdown(findings, references, { host: values.host!, projectId: values["project-id"]! })
+      ? renderMarkdown(findings, references, { host: values.host!, projectId: values["project-id"]!, flags })
       : renderText(findings, references.length),
   );
   process.exit(findings.some((f) => f.severity === "error") ? 1 : 0);

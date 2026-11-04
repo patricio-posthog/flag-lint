@@ -29991,7 +29991,7 @@ async function run() {
     const findings = (0, checks_1.runChecks)(references, flags);
     const sha = pr?.head.sha ?? github.context.sha;
     const blobUrl = `${github.context.serverUrl}/${owner}/${repo}/blob/${sha}`;
-    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, sha });
+    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, sha, flags });
     await core.summary.addRaw(body).write();
     if (pr && shouldComment)
         await upsertComment(octokit, owner, repo, pr.number, body);
@@ -30485,6 +30485,7 @@ function pythonStringValue(node) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchFlags = fetchFlags;
+exports.releaseSummary = releaseSummary;
 // The list endpoint hides archived flags unless `archived` is passed, so fetch both sets.
 // Staleness comes from PostHog's own `active=STALE` filter rather than being recomputed here.
 async function fetchFlags(config) {
@@ -30523,11 +30524,21 @@ async function fetchAll(config, extraQuery) {
                 runningExperiments: (f.experiment_set_metadata ?? [])
                     .filter((e) => e.is_running)
                     .map((e) => ({ id: e.id, name: e.name })),
+                release: releaseSummary(f.filters?.groups),
             });
         }
         url = page.next;
     }
     return flags;
+}
+function releaseSummary(groups) {
+    if (!Array.isArray(groups) || groups.length === 0)
+        return "No release conditions";
+    if (groups.length > 1)
+        return `${groups.length} condition sets`;
+    const [group] = groups;
+    const rollout = group.rollout_percentage ?? 100;
+    return group.properties?.length ? `${rollout}% of matching users` : `${rollout}% of users`;
 }
 
 
@@ -30558,8 +30569,9 @@ function renderMarkdown(findings, references, context) {
         lines.push("No feature flag references in the changed files.", "", footer);
         return lines.join("\n") + "\n";
     }
+    const summary = flagSummary(references, context.flags, flagsUrl);
     if (findings.length === 0) {
-        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
+        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...summary, footer);
         return lines.join("\n") + "\n";
     }
     const counts = [errors.length && `**${plural(errors.length, "problem")}**`, warnings.length && plural(warnings.length, "warning")];
@@ -30576,8 +30588,48 @@ function renderMarkdown(findings, references, context) {
         ];
         lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
     }
-    lines.push("", `[View flags](${flagsUrl})`, "", footer);
+    lines.push("", `[View flags](${flagsUrl})`, "", ...summary, footer);
     return lines.join("\n") + "\n";
+}
+// Collapsed table of every flag the PR touches and its current state, so a reviewer sees what
+// the change affects even when nothing is wrong.
+function flagSummary(references, flags, flagsUrl) {
+    if (!flags)
+        return [];
+    const uses = new Map();
+    for (const ref of references)
+        if (ref.key !== null)
+            uses.set(ref.key, (uses.get(ref.key) ?? 0) + 1);
+    if (uses.size === 0)
+        return [];
+    const byKey = new Map(flags.map((f) => [f.key, f]));
+    const rows = [...uses].map(([key, count]) => {
+        const flag = byKey.get(key);
+        const usedIn = plural(count, "place");
+        if (!flag)
+            return `| ${code(key)} | Not in PostHog | | | ${usedIn} |`;
+        const status = [
+            flag.archived ? "Archived" : flag.active ? "On" : "Off",
+            ...(flag.runningExperiments.length ? ["🧪 experiment running"] : []),
+        ].join(" · ");
+        const type = flag.variants ? `Multivariate (${flag.variants.length} variants)` : "Boolean";
+        const release = [
+            flag.release,
+            ...(flag.evaluationRuntime === "client" || flag.evaluationRuntime === "server" ? [`${flag.evaluationRuntime} only`] : []),
+        ].join(" · ");
+        return `| [${code(key)}](${flagsUrl}/${flag.id}) | ${status} | ${type} | ${release} | ${usedIn} |`;
+    });
+    return [
+        "<details>",
+        `<summary>Flags in this PR (${uses.size})</summary>`,
+        "",
+        "| Flag | Status | Type | Release | Used in |",
+        "|---|---|---|---|---|",
+        ...rows,
+        "",
+        "</details>",
+        "",
+    ];
 }
 function renderText(findings, scannedReferences) {
     if (findings.length === 0)
