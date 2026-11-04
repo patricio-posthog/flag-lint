@@ -11,6 +11,7 @@ const ref = (key: string | null, file: string, line: number, expression = `"${ke
   line,
   column: 1,
   variants: [],
+  runtime: null,
 });
 const context = { host: "https://us.posthog.com/", projectId: "1", blobUrl: "https://github.com/o/r/blob/abc1234def", sha: "abc1234def" };
 
@@ -23,8 +24,8 @@ describe("renderMarkdown", () => {
       ref(null, "src/exp.ts", 3, "`exp-${x}`"),
     ];
     const flags = [
-      { id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null },
-      { id: 2, key: "old-banner", active: true, archived: true, stale: false, variants: null },
+      { id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] },
+      { id: 2, key: "old-banner", active: true, archived: true, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] },
     ];
     expect(renderMarkdown(runChecks(references, flags), references, context)).toMatchInlineSnapshot(`
       "<!-- flag-lint -->
@@ -60,7 +61,7 @@ describe("renderMarkdown", () => {
 describe("annotations", () => {
   it("marks every reference with plain-text messages", () => {
     const references = [ref("old", "src/a.ts", 3), ref("old", "src/b.ts", 7), ref(null, "src/c.ts", 1, "flagName")];
-    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false, variants: null }];
+    const flags = [{ id: 1, key: "old", active: true, archived: true, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] }];
     expect(annotations(runChecks(references, flags))).toEqual([
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/a.ts", line: 3, column: 1 },
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/b.ts", line: 7, column: 1 },
@@ -87,7 +88,17 @@ describe("create links", () => {
 
   it("doesn't offer to create a likely typo", () => {
     const references = [ref("new-chekout", "src/a.ts", 1)];
-    const flags = [{ id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null }];
+    const flags = [{ id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [] }];
     expect(renderMarkdown(runChecks(references, flags), references, context)).not.toContain("Create it");
+  });
+});
+
+describe("finding links", () => {
+  it("renders extra links next to the problem", () => {
+    const references = [ref("exp", "src/a.ts", 1)];
+    const flags = [{ id: 3, key: "exp", active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [{ id: 12, name: "New checkout" }] }];
+    expect(renderMarkdown(runChecks(references, flags), references, context)).toContain(
+      '| ⚠️ | [`exp`](https://us.posthog.com/project/1/feature_flags/3) | Drives the running experiment "New checkout". Changing this code can skew the results · [View New checkout →](https://us.posthog.com/project/1/experiments/12) |',
+    );
   });
 });

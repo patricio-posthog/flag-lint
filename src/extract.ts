@@ -15,7 +15,11 @@ export interface FlagReference {
   column: number;
   // Variant names the code compares the flag's value against.
   variants: VariantUse[];
+  // Where the call runs, when it can be told from the SDK in use. null when it can't.
+  runtime: Runtime | null;
 }
+
+export type Runtime = "client" | "server";
 
 export interface VariantUse {
   value: string;
@@ -42,6 +46,11 @@ const PY_METHODS = [
 // Snapshot API from evaluateFlags(). The names are generic, so only match them as method calls.
 const JS_SNAPSHOT_METHODS = ["isEnabled", "getFlag", "getPayload"];
 const PY_SNAPSHOT_METHODS = ["is_enabled", "get_flag", "get_payload"];
+// React bindings only exist in the browser SDK; the evaluateFlags() snapshot only in server SDKs.
+const CLIENT_METHODS = new Set(["useFeatureFlagEnabled", "useFeatureFlagVariantKey", "useFeatureFlagPayload", "PostHogFeature"]);
+const CLIENT_PACKAGES = /^(posthog-js|posthog-react-native|@posthog\/react)(\/|$)/;
+const SERVER_PACKAGES = /^posthog-node(\/|$)/;
+
 // Calls whose return value is the variant name, so comparisons against them are worth checking.
 const VARIANT_METHODS = new Set(["getFeatureFlag", "useFeatureFlagVariantKey", "getFlag", "get_feature_flag", "get_flag"]);
 
@@ -103,6 +112,10 @@ export async function extractReferences(
   const methods = new Set([...(isPython ? PY_METHODS : JS_METHODS), ...(options.wrappers ?? [])]);
   const snapshotMethods = new Set(isPython ? PY_SNAPSHOT_METHODS : JS_SNAPSHOT_METHODS);
 
+  const fileRuntime = isPython ? "server" : runtimeFromImports(source);
+  const runtimeOf = (method: string): Runtime | null =>
+    isPython ? "server" : CLIENT_METHODS.has(method) ? "client" : snapshotMethods.has(method) ? "server" : fileRuntime;
+
   const references: FlagReference[] = [];
   const visit = (node: Parser.SyntaxNode) => {
     if (node.type === (isPython ? "call" : "call_expression")) {
@@ -111,11 +124,11 @@ export async function extractReferences(
         : jsCall(node, methods, snapshotMethods);
       if (ref) {
         const variants = VARIANT_METHODS.has(ref.method) ? variantUses(node, isPython) : [];
-        references.push({ ...ref, variants, file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+        references.push({ ...ref, variants, runtime: runtimeOf(ref.method), file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
       }
     } else if (!isPython && (node.type === "jsx_opening_element" || node.type === "jsx_self_closing_element")) {
       const ref = jsxFeature(node);
-      if (ref) references.push({ ...ref, file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+      if (ref) references.push({ ...ref, runtime: "client", file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
     }
     for (const child of node.namedChildren) visit(child);
   };
@@ -123,6 +136,15 @@ export async function extractReferences(
   tree.delete();
   parser.delete();
   return references;
+}
+
+// `posthog.isFeatureEnabled` exists in both posthog-js and posthog-node, so the file's imports decide.
+// A file importing both (or neither) stays unknown rather than guessing.
+function runtimeFromImports(source: string): Runtime | null {
+  const packages = [...source.matchAll(/(?:from\s+|require\(\s*|import\(\s*)["']([^"']+)["']/g)].map((m) => m[1]);
+  const client = packages.some((p) => CLIENT_PACKAGES.test(p));
+  const server = packages.some((p) => SERVER_PACKAGES.test(p));
+  return client === server ? null : client ? "client" : "server";
 }
 
 type CallMatch = Pick<FlagReference, "key" | "expression" | "method">;

@@ -11,8 +11,9 @@ const ref = (key: string | null, line = 1): FlagReference => ({
   line,
   column: 1,
   variants: [],
+  runtime: null,
 });
-const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, variants: null, ...extra });
+const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], ...extra });
 
 describe("runChecks", () => {
   it("reports missing flags once per key with every reference", () => {
@@ -83,5 +84,31 @@ describe("variant checks", () => {
 
   it("skips variant checks for missing flags", () => {
     expect(runChecks([withVariants("nope", ["a"])], []).map((f) => f.kind)).toEqual(["missing"]);
+  });
+});
+
+describe("runtime and experiment checks", () => {
+  const at = (key: string, runtime: "client" | "server" | null, line = 1): FlagReference => ({ ...ref(key, line), runtime });
+
+  it("flags calls from the runtime a flag doesn't evaluate in", () => {
+    const findings = runChecks([at("srv", "client", 3), at("srv", "server", 4), at("srv", null, 5)], [flag("srv", false, { evaluationRuntime: "server" })]);
+    expect(findings).toMatchObject([{ kind: "runtime", severity: "error", message: "Set to evaluate on the server only, so it's always off in client code" }]);
+    expect(findings[0].references.map((r) => r.line)).toEqual([3]);
+  });
+
+  it("ignores flags that evaluate everywhere", () => {
+    expect(runChecks([at("all", "client")], [flag("all", false, { evaluationRuntime: "all" })])).toEqual([]);
+  });
+
+  it("warns when a flag drives a running experiment, linking to it", () => {
+    const findings = runChecks([ref("exp")], [flag("exp", false, { runningExperiments: [{ id: 12, name: "New checkout" }] })]);
+    expect(findings).toMatchObject([
+      {
+        kind: "experiment",
+        severity: "warning",
+        message: 'Drives the running experiment "New checkout". Changing this code can skew the results',
+        links: [{ label: "View New checkout", path: "experiments/12" }],
+      },
+    ]);
   });
 });

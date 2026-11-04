@@ -74,3 +74,30 @@ describe("variant comparisons", () => {
     });
   });
 });
+
+describe("runtime", () => {
+  const runtimes = async (source: string, file: string) =>
+    (await extractReferences(source, file)).map((r) => [r.key, r.runtime]);
+
+  it("uses the file's imports for calls both SDKs share", async () => {
+    expect(await runtimes(fixture("app.tsx"), "app.tsx")).toContainEqual(["promo-banner", "client"]);
+    expect(await runtimes(fixture("server.ts"), "server.ts")).toEqual([
+      ["server-legacy", "server"],
+      ["server-snapshot", "server"],
+      ["server-variant", "server"],
+    ]);
+  });
+
+  it("treats React bindings as client and Python as server", async () => {
+    expect(await runtimes('useFeatureFlagEnabled("a"); posthog.isFeatureEnabled("b")', "x.ts")).toEqual([
+      ["a", "client"],
+      ["b", null],
+    ]);
+    expect(await runtimes('posthog.feature_enabled("c", "u")', "x.py")).toEqual([["c", "server"]]);
+  });
+
+  it("stays unknown when a file imports both SDKs", async () => {
+    const source = 'import posthog from "posthog-js"\nimport { PostHog } from "posthog-node"\nposthog.isFeatureEnabled("d")';
+    expect(await runtimes(source, "x.ts")).toEqual([["d", null]]);
+  });
+});

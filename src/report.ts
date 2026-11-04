@@ -37,8 +37,12 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
     const name = code(finding.key ?? finding.references[0].expression);
     const flag = finding.flagId === undefined ? name : `[${name}](${flagsUrl}/${finding.flagId})`;
     const where = finding.references.map((r) => location(r, context)).join(", ");
-    const create = finding.create && finding.key ? ` · [Create it →](${createUrl(flagsUrl, finding.key, finding.create.variants)})` : "";
-    lines.push(`| ${icon} | ${flag} | ${cell(finding.message)}${create} | ${where} |`);
+    const projectUrl = `${host}/project/${context.projectId}`;
+    const links = [
+      ...(finding.create && finding.key ? [`[Create it →](${createUrl(flagsUrl, finding.key, finding.create.variants)})`] : []),
+      ...(finding.links ?? []).map((l) => `[${cell(l.label)} →](${projectUrl}/${l.path})`),
+    ];
+    lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
   }
 
   lines.push("", `[View flags](${flagsUrl})`, "", footer);

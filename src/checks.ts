@@ -5,12 +5,14 @@ export type Severity = "error" | "warning";
 
 export interface Finding {
   severity: Severity;
-  kind: "missing" | "archived" | "disabled" | "stale" | "variant" | "dynamic";
+  kind: "missing" | "archived" | "disabled" | "stale" | "variant" | "runtime" | "experiment" | "dynamic";
   key: string | null;
   // Set when the flag exists in PostHog, to link to it.
   flagId?: number;
   // Set for missing flags that aren't a likely typo: what a "create it" link should prefill.
   create?: { variants: string[] | null };
+  // Extra links, relative to the project (e.g. `experiments/12`).
+  links?: { label: string; path: string }[];
   message: string;
   references: FlagReference[];
 }
@@ -45,7 +47,9 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
         references: refs,
       });
     }
-    if (flag && !flag.archived) findings.push(...variantFindings(flag, refs));
+    if (flag && !flag.archived) {
+      findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), ...experimentFindings(flag, refs));
+    }
   }
 
   for (const ref of references.filter((r) => r.key === null)) {
@@ -94,6 +98,37 @@ function variantFindings(flag: Flag, refs: FlagReference[]): Finding[] {
       references: at,
     };
   });
+}
+
+// A flag limited to one evaluation runtime is never served to the other kind of SDK, so the
+// call silently returns undefined/false there.
+function runtimeFindings(flag: Flag, refs: FlagReference[]): Finding[] {
+  const limitedTo = flag.evaluationRuntime;
+  if (limitedTo !== "client" && limitedTo !== "server") return [];
+  const wrong = refs.filter((r) => r.runtime !== null && r.runtime !== limitedTo);
+  if (wrong.length === 0) return [];
+  const message =
+    limitedTo === "server"
+      ? "Set to evaluate on the server only, so it's always off in client code"
+      : "Set to evaluate in client SDKs only, so it's always off in server code";
+  return [{ severity: "error", kind: "runtime", key: flag.key, flagId: flag.id, message, references: wrong }];
+}
+
+// Only says the PR touches files that use the flag: removed call sites aren't visible from the head commit.
+function experimentFindings(flag: Flag, refs: FlagReference[]): Finding[] {
+  if (flag.runningExperiments.length === 0) return [];
+  const names = flag.runningExperiments.map((e) => `"${e.name}"`).join(", ");
+  return [
+    {
+      severity: "warning",
+      kind: "experiment",
+      key: flag.key,
+      flagId: flag.id,
+      message: `Drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Changing this code can skew the results`,
+      links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
+      references: refs,
+    },
+  ];
 }
 
 // Variant names the code compares against, with `control` first since PostHog and experiments expect it.

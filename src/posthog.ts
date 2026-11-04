@@ -6,6 +6,9 @@ export interface Flag {
   stale: boolean;
   // Variant keys for multivariate flags, null for boolean ones.
   variants: string[] | null;
+  // "client" or "server" when the flag is limited to one kind of SDK; "all" or null otherwise.
+  evaluationRuntime: string | null;
+  runningExperiments: { id: number; name: string }[];
 }
 
 export interface PostHogConfig {
@@ -48,6 +51,10 @@ async function fetchAll(config: PostHogConfig, extraQuery: string): Promise<Flag
         archived: Boolean(f.archived),
         stale: false,
         variants: Array.isArray(variants) ? variants.map((v: { key: string }) => v.key) : null,
+        evaluationRuntime: f.evaluation_runtime ?? null,
+        runningExperiments: (f.experiment_set_metadata ?? [])
+          .filter((e: { is_running: boolean }) => e.is_running)
+          .map((e: { id: number; name: string }) => ({ id: e.id, name: e.name })),
       });
     }
     url = page.next;

@@ -49,8 +49,9 @@ function runChecks(references, flags) {
                 references: refs,
             });
         }
-        if (flag && !flag.archived)
-            findings.push(...variantFindings(flag, refs));
+        if (flag && !flag.archived) {
+            findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), ...experimentFindings(flag, refs));
+        }
     }
     for (const ref of references.filter((r) => r.key === null)) {
         findings.push({
@@ -98,6 +99,37 @@ function variantFindings(flag, refs) {
             references: at,
         };
     });
+}
+// A flag limited to one evaluation runtime is never served to the other kind of SDK, so the
+// call silently returns undefined/false there.
+function runtimeFindings(flag, refs) {
+    const limitedTo = flag.evaluationRuntime;
+    if (limitedTo !== "client" && limitedTo !== "server")
+        return [];
+    const wrong = refs.filter((r) => r.runtime !== null && r.runtime !== limitedTo);
+    if (wrong.length === 0)
+        return [];
+    const message = limitedTo === "server"
+        ? "Set to evaluate on the server only, so it's always off in client code"
+        : "Set to evaluate in client SDKs only, so it's always off in server code";
+    return [{ severity: "error", kind: "runtime", key: flag.key, flagId: flag.id, message, references: wrong }];
+}
+// Only says the PR touches files that use the flag: removed call sites aren't visible from the head commit.
+function experimentFindings(flag, refs) {
+    if (flag.runningExperiments.length === 0)
+        return [];
+    const names = flag.runningExperiments.map((e) => `"${e.name}"`).join(", ");
+    return [
+        {
+            severity: "warning",
+            kind: "experiment",
+            key: flag.key,
+            flagId: flag.id,
+            message: `Drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Changing this code can skew the results`,
+            links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
+            references: refs,
+        },
+    ];
 }
 // Variant names the code compares against, with `control` first since PostHog and experiments expect it.
 // null when the code never compares the value, so the flag is created as a boolean.
@@ -233,6 +265,10 @@ const PY_METHODS = [
 // Snapshot API from evaluateFlags(). The names are generic, so only match them as method calls.
 const JS_SNAPSHOT_METHODS = ["isEnabled", "getFlag", "getPayload"];
 const PY_SNAPSHOT_METHODS = ["is_enabled", "get_flag", "get_payload"];
+// React bindings only exist in the browser SDK; the evaluateFlags() snapshot only in server SDKs.
+const CLIENT_METHODS = new Set(["useFeatureFlagEnabled", "useFeatureFlagVariantKey", "useFeatureFlagPayload", "PostHogFeature"]);
+const CLIENT_PACKAGES = /^(posthog-js|posthog-react-native|@posthog\/react)(\/|$)/;
+const SERVER_PACKAGES = /^posthog-node(\/|$)/;
 // Calls whose return value is the variant name, so comparisons against them are worth checking.
 const VARIANT_METHODS = new Set(["getFeatureFlag", "useFeatureFlagVariantKey", "getFlag", "get_feature_flag", "get_flag"]);
 const EXTENSIONS = {
@@ -279,6 +315,8 @@ async function extractReferences(source, file, options = {}) {
     const isPython = language === "python";
     const methods = new Set([...(isPython ? PY_METHODS : JS_METHODS), ...(options.wrappers ?? [])]);
     const snapshotMethods = new Set(isPython ? PY_SNAPSHOT_METHODS : JS_SNAPSHOT_METHODS);
+    const fileRuntime = isPython ? "server" : runtimeFromImports(source);
+    const runtimeOf = (method) => isPython ? "server" : CLIENT_METHODS.has(method) ? "client" : snapshotMethods.has(method) ? "server" : fileRuntime;
     const references = [];
     const visit = (node) => {
         if (node.type === (isPython ? "call" : "call_expression")) {
@@ -287,13 +325,13 @@ async function extractReferences(source, file, options = {}) {
                 : jsCall(node, methods, snapshotMethods);
             if (ref) {
                 const variants = VARIANT_METHODS.has(ref.method) ? variantUses(node, isPython) : [];
-                references.push({ ...ref, variants, file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+                references.push({ ...ref, variants, runtime: runtimeOf(ref.method), file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
             }
         }
         else if (!isPython && (node.type === "jsx_opening_element" || node.type === "jsx_self_closing_element")) {
             const ref = jsxFeature(node);
             if (ref)
-                references.push({ ...ref, file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+                references.push({ ...ref, runtime: "client", file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
         }
         for (const child of node.namedChildren)
             visit(child);
@@ -302,6 +340,14 @@ async function extractReferences(source, file, options = {}) {
     tree.delete();
     parser.delete();
     return references;
+}
+// `posthog.isFeatureEnabled` exists in both posthog-js and posthog-node, so the file's imports decide.
+// A file importing both (or neither) stays unknown rather than guessing.
+function runtimeFromImports(source) {
+    const packages = [...source.matchAll(/(?:from\s+|require\(\s*|import\(\s*)["']([^"']+)["']/g)].map((m) => m[1]);
+    const client = packages.some((p) => CLIENT_PACKAGES.test(p));
+    const server = packages.some((p) => SERVER_PACKAGES.test(p));
+    return client === server ? null : client ? "client" : "server";
 }
 function jsCall(node, methods, snapshotMethods) {
     const fn = node.childForFieldName("function");
@@ -516,6 +562,10 @@ async function fetchAll(config, extraQuery) {
                 archived: Boolean(f.archived),
                 stale: false,
                 variants: Array.isArray(variants) ? variants.map((v) => v.key) : null,
+                evaluationRuntime: f.evaluation_runtime ?? null,
+                runningExperiments: (f.experiment_set_metadata ?? [])
+                    .filter((e) => e.is_running)
+                    .map((e) => ({ id: e.id, name: e.name })),
             });
         }
         url = page.next;
@@ -562,8 +612,12 @@ function renderMarkdown(findings, references, context) {
         const name = code(finding.key ?? finding.references[0].expression);
         const flag = finding.flagId === undefined ? name : `[${name}](${flagsUrl}/${finding.flagId})`;
         const where = finding.references.map((r) => location(r, context)).join(", ");
-        const create = finding.create && finding.key ? ` · [Create it →](${createUrl(flagsUrl, finding.key, finding.create.variants)})` : "";
-        lines.push(`| ${icon} | ${flag} | ${cell(finding.message)}${create} | ${where} |`);
+        const projectUrl = `${host}/project/${context.projectId}`;
+        const links = [
+            ...(finding.create && finding.key ? [`[Create it →](${createUrl(flagsUrl, finding.key, finding.create.variants)})`] : []),
+            ...(finding.links ?? []).map((l) => `[${cell(l.label)} →](${projectUrl}/${l.path})`),
+        ];
+        lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
     }
     lines.push("", `[View flags](${flagsUrl})`, "", footer);
     return lines.join("\n") + "\n";
