@@ -30569,7 +30569,7 @@ function renderMarkdown(findings, references, context) {
         lines.push("No feature flag references in the changed files.", "", footer);
         return lines.join("\n") + "\n";
     }
-    const summary = flagSummary(references, context.flags, flagsUrl);
+    const summary = flagSummary(references, context, flagsUrl, findings.length === 0);
     if (findings.length === 0) {
         lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...summary, footer);
         return lines.join("\n") + "\n";
@@ -30591,41 +30591,51 @@ function renderMarkdown(findings, references, context) {
     lines.push("", `[View flags](${flagsUrl})`, "", ...summary, footer);
     return lines.join("\n") + "\n";
 }
-// Collapsed table of every flag the PR touches and its current state, so a reviewer sees what
-// the change affects even when nothing is wrong.
-function flagSummary(references, flags, flagsUrl) {
-    if (!flags)
+// Every flag the PR touches and its current state, so a reviewer sees what the change affects
+// even when nothing is wrong. Flags that need attention sort first.
+const STATUSES = [
+    { id: "missing", label: "❔ Not in PostHog", icon: "❔" },
+    { id: "archived", label: "📦 Archived", icon: "📦" },
+    { id: "off", label: "⚪ Off", icon: "⚪" },
+    { id: "on", label: "🟢 On", icon: "🟢" },
+];
+function flagSummary(references, context, flagsUrl, open) {
+    if (!context.flags)
         return [];
-    const uses = new Map();
+    const refsByKey = new Map();
     for (const ref of references)
         if (ref.key !== null)
-            uses.set(ref.key, (uses.get(ref.key) ?? 0) + 1);
-    if (uses.size === 0)
+            refsByKey.set(ref.key, [...(refsByKey.get(ref.key) ?? []), ref]);
+    if (refsByKey.size === 0)
         return [];
-    const byKey = new Map(flags.map((f) => [f.key, f]));
-    const rows = [...uses].map(([key, count]) => {
+    const byKey = new Map(context.flags.map((f) => [f.key, f]));
+    const rows = [...refsByKey].map(([key, refs]) => {
         const flag = byKey.get(key);
-        const usedIn = plural(count, "place");
+        const status = !flag ? STATUSES[0] : flag.archived ? STATUSES[1] : flag.active ? STATUSES[3] : STATUSES[2];
+        return { key, refs, flag, status };
+    });
+    rows.sort((a, b) => STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) || a.key.localeCompare(b.key));
+    const counts = STATUSES.map((st) => [st, rows.filter((r) => r.status === st).length])
+        .filter(([, n]) => n > 0)
+        .map(([st, n]) => `${st.icon} ${n}`);
+    const lines = rows.map(({ key, refs, flag, status }) => {
+        const shown = refs.slice(0, 2).map((r) => location(r, context));
+        const usedIn = [...shown, ...(refs.length > 2 ? [`+${refs.length - 2} more`] : [])].join("<br>");
         if (!flag)
-            return `| ${code(key)} | Not in PostHog | | | ${usedIn} |`;
-        const status = [
-            flag.archived ? "Archived" : flag.active ? "On" : "Off",
-            ...(flag.runningExperiments.length ? ["🧪 experiment running"] : []),
-        ].join(" · ");
-        const type = flag.variants ? `Multivariate (${flag.variants.length} variants)` : "Boolean";
-        const release = [
-            flag.release,
-            ...(flag.evaluationRuntime === "client" || flag.evaluationRuntime === "server" ? [`${flag.evaluationRuntime} only`] : []),
-        ].join(" · ");
-        return `| [${code(key)}](${flagsUrl}/${flag.id}) | ${status} | ${type} | ${release} | ${usedIn} |`;
+            return `| ${status.label} | ${code(key)} | – | ${usedIn} |`;
+        const statusCell = [status.label, ...(flag.runningExperiments.length ? ["🧪 Experiment running"] : [])].join("<br>");
+        const variants = flag.variants?.length ? `<br><sub>${flag.variants.map((v) => code(v)).join(" · ")}</sub>` : "";
+        const runtime = flag.evaluationRuntime === "server" ? "🖥️ Server only" : flag.evaluationRuntime === "client" ? "🌐 Client only" : null;
+        const rollout = [flag.variants ? `${plural(flag.variants.length, "variant")} · ${flag.release}` : flag.release, ...(runtime ? [`<sub>${runtime}</sub>`] : [])].join("<br>");
+        return `| ${statusCell} | [${code(key)}](${flagsUrl}/${flag.id})${variants} | ${rollout} | ${usedIn} |`;
     });
     return [
-        "<details>",
-        `<summary>Flags in this PR (${uses.size})</summary>`,
+        open ? "<details open>" : "<details>",
+        `<summary><b>Flags in this PR</b> · ${plural(rows.length, "flag")} · ${counts.join(" · ")}</summary>`,
         "",
-        "| Flag | Status | Type | Release | Used in |",
-        "|---|---|---|---|---|",
-        ...rows,
+        "| Status | Flag | Rollout | Used in |",
+        "|---|---|---|---|",
+        ...lines,
         "",
         "</details>",
         "",

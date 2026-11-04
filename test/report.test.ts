@@ -106,37 +106,49 @@ describe("finding links", () => {
 
 describe("flag summary", () => {
   const base = { active: true, archived: false, stale: false, variants: null, evaluationRuntime: "all", runningExperiments: [], release: "100% of users" };
+  const summaryOf = (markdown: string) => markdown.slice(markdown.indexOf("<details"), markdown.indexOf("</details>")).split("\n");
 
-  it("lists every flag the PR touches with its current state", () => {
-    const references = [ref("on", "a.ts", 1), ref("on", "b.ts", 2), ref("multi", "a.ts", 3), ref("srv", "a.py", 4), ref("missing", "a.ts", 5), ref(null, "a.ts", 6, "flagName")];
+  it("lists every flag the PR touches, flags that need attention first", () => {
+    const references = [
+      ref("on", "a.ts", 1),
+      ref("on", "b.ts", 2),
+      ref("on", "c.ts", 9),
+      ref("multi", "a.ts", 3),
+      ref("srv", "a.py", 4),
+      ref("missing", "a.ts", 5),
+      ref(null, "a.ts", 6, "flagName"),
+    ];
     const flags = [
       { ...base, id: 1, key: "on", release: "20% of users" },
       { ...base, id: 2, key: "multi", variants: ["control", "test"], runningExperiments: [{ id: 9, name: "Exp" }] },
       { ...base, id: 3, key: "srv", active: false, evaluationRuntime: "server" },
     ];
-    const markdown = renderMarkdown(runChecks(references, flags), references, { ...context, flags });
-    const summary = markdown.slice(markdown.indexOf("<details>"), markdown.indexOf("</details>"));
-    expect(summary.split("\n")).toEqual([
+    const blob = "https://github.com/o/r/blob/abc1234def";
+    const flagUrl = "https://us.posthog.com/project/1/feature_flags";
+    expect(summaryOf(renderMarkdown(runChecks(references, flags), references, { ...context, flags }))).toEqual([
       "<details>",
-      "<summary>Flags in this PR (4)</summary>",
+      "<summary><b>Flags in this PR</b> · 4 flags · ❔ 1 · ⚪ 1 · 🟢 2</summary>",
       "",
-      "| Flag | Status | Type | Release | Used in |",
-      "|---|---|---|---|---|",
-      "| [`on`](https://us.posthog.com/project/1/feature_flags/1) | On | Boolean | 20% of users | 2 places |",
-      "| [`multi`](https://us.posthog.com/project/1/feature_flags/2) | On · 🧪 experiment running | Multivariate (2 variants) | 100% of users | 1 place |",
-      "| [`srv`](https://us.posthog.com/project/1/feature_flags/3) | Off | Boolean | 100% of users · server only | 1 place |",
-      "| `missing` | Not in PostHog | | | 1 place |",
+      "| Status | Flag | Rollout | Used in |",
+      "|---|---|---|---|",
+      `| ❔ Not in PostHog | \`missing\` | – | [\`a.ts:5\`](${blob}/a.ts#L5) |`,
+      `| ⚪ Off | [\`srv\`](${flagUrl}/3) | 100% of users<br><sub>🖥️ Server only</sub> | [\`a.py:4\`](${blob}/a.py#L4) |`,
+      `| 🟢 On<br>🧪 Experiment running | [\`multi\`](${flagUrl}/2)<br><sub>\`control\` · \`test\`</sub> | 2 variants · 100% of users | [\`a.ts:3\`](${blob}/a.ts#L3) |`,
+      `| 🟢 On | [\`on\`](${flagUrl}/1) | 20% of users | [\`a.ts:1\`](${blob}/a.ts#L1)<br>[\`b.ts:2\`](${blob}/b.ts#L2)<br>+1 more |`,
       "",
       "",
     ]);
   });
 
-  it("also shows when every flag matches", () => {
-    const references = [ref("on", "a.ts", 1)];
+  it("starts open when every flag matches, collapsed when there are problems", () => {
     const flags = [{ ...base, id: 1, key: "on" }];
-    const markdown = renderMarkdown(runChecks(references, flags), references, { ...context, flags });
-    expect(markdown).toContain("✅ The flag reference matches your PostHog project.");
-    expect(markdown).toContain("<summary>Flags in this PR (1)</summary>");
+    const ok = [ref("on", "a.ts", 1)];
+    const clean = renderMarkdown(runChecks(ok, flags), ok, { ...context, flags });
+    expect(clean).toContain("✅ The flag reference matches your PostHog project.");
+    expect(clean).toContain("<details open>");
+
+    const broken = [ref("on", "a.ts", 1), ref("nope", "a.ts", 2)];
+    expect(renderMarkdown(runChecks(broken, flags), broken, { ...context, flags })).toContain("<details>\n<summary>");
   });
 });
 
