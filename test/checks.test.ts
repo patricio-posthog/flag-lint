@@ -13,7 +13,7 @@ const ref = (key: string | null, line = 1): FlagReference => ({
   variants: [],
   runtime: null,
 });
-const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], release: "100% of users", ...extra });
+const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], ...extra });
 
 describe("runChecks", () => {
   it("reports missing flags once per key with every reference", () => {

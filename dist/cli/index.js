@@ -528,7 +528,6 @@ function pythonStringValue(node) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchFlags = fetchFlags;
-exports.releaseSummary = releaseSummary;
 // The list endpoint hides archived flags unless `archived` is passed, so fetch both sets.
 // Staleness comes from PostHog's own `active=STALE` filter rather than being recomputed here.
 async function fetchFlags(config) {
@@ -567,21 +566,11 @@ async function fetchAll(config, extraQuery) {
                 runningExperiments: (f.experiment_set_metadata ?? [])
                     .filter((e) => e.is_running)
                     .map((e) => ({ id: e.id, name: e.name })),
-                release: releaseSummary(f.filters?.groups),
             });
         }
         url = page.next;
     }
     return flags;
-}
-function releaseSummary(groups) {
-    if (!Array.isArray(groups) || groups.length === 0)
-        return "No release conditions";
-    if (groups.length > 1)
-        return `${groups.length} condition sets`;
-    const [group] = groups;
-    const rollout = group.rollout_percentage ?? 100;
-    return group.properties?.length ? `${rollout}% of matching users` : `${rollout}% of users`;
 }
 
 
@@ -612,7 +601,7 @@ function renderMarkdown(findings, references, context) {
         lines.push("No feature flag references in the changed files.", "", footer);
         return lines.join("\n") + "\n";
     }
-    const summary = flagSummary(references, context, flagsUrl, findings.length === 0);
+    const summary = flagSummary(references, context, flagsUrl);
     if (findings.length === 0) {
         lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...summary, footer);
         return lines.join("\n") + "\n";
@@ -634,55 +623,26 @@ function renderMarkdown(findings, references, context) {
     lines.push("", `[View flags](${flagsUrl})`, "", ...summary, footer);
     return lines.join("\n") + "\n";
 }
-// Every flag the PR touches and its current state, so a reviewer sees what the change affects
-// even when nothing is wrong. Flags that need attention sort first.
-const STATUSES = [
-    { id: "missing", label: "❔ Not in PostHog", icon: "❔" },
-    { id: "archived", label: "📦 Archived", icon: "📦" },
-    { id: "off", label: "⚪ Off", icon: "⚪" },
-    { id: "on", label: "🟢 On", icon: "🟢" },
-];
-function flagSummary(references, context, flagsUrl, open) {
+// One line listing every flag the PR touches with its state, so a reviewer sees what the change
+// affects even when nothing is wrong. Flags that need attention come first.
+const STATUS_ORDER = ["❔", "📦", "⚪", "🟢"];
+function flagSummary(references, context, flagsUrl) {
     if (!context.flags)
         return [];
-    const refsByKey = new Map();
-    for (const ref of references)
-        if (ref.key !== null)
-            refsByKey.set(ref.key, [...(refsByKey.get(ref.key) ?? []), ref]);
-    if (refsByKey.size === 0)
+    const keys = [...new Set(references.flatMap((r) => (r.key === null ? [] : [r.key])))];
+    if (keys.length === 0)
         return [];
     const byKey = new Map(context.flags.map((f) => [f.key, f]));
-    const rows = [...refsByKey].map(([key, refs]) => {
+    const items = keys.map((key) => {
         const flag = byKey.get(key);
-        const status = !flag ? STATUSES[0] : flag.archived ? STATUSES[1] : flag.active ? STATUSES[3] : STATUSES[2];
-        return { key, refs, flag, status };
-    });
-    rows.sort((a, b) => STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) || a.key.localeCompare(b.key));
-    const counts = STATUSES.map((st) => [st, rows.filter((r) => r.status === st).length])
-        .filter(([, n]) => n > 0)
-        .map(([st, n]) => `${st.icon} ${n}`);
-    const lines = rows.map(({ key, refs, flag, status }) => {
-        const shown = refs.slice(0, 2).map((r) => location(r, context));
-        const usedIn = [...shown, ...(refs.length > 2 ? [`+${refs.length - 2} more`] : [])].join("<br>");
         if (!flag)
-            return `| ${status.label} | ${code(key)} | – | ${usedIn} |`;
-        const statusCell = [status.label, ...(flag.runningExperiments.length ? ["🧪 Experiment running"] : [])].join("<br>");
-        const variants = flag.variants?.length ? `<br><sub>${flag.variants.map((v) => code(v)).join(" · ")}</sub>` : "";
-        const runtime = flag.evaluationRuntime === "server" ? "🖥️ Server only" : flag.evaluationRuntime === "client" ? "🌐 Client only" : null;
-        const rollout = [flag.variants ? `${plural(flag.variants.length, "variant")} · ${flag.release}` : flag.release, ...(runtime ? [`<sub>${runtime}</sub>`] : [])].join("<br>");
-        return `| ${statusCell} | [${code(key)}](${flagsUrl}/${flag.id})${variants} | ${rollout} | ${usedIn} |`;
+            return { key, icon: "❔", text: code(key) };
+        const icon = flag.archived ? "📦" : flag.active ? "🟢" : "⚪";
+        const experiment = flag.runningExperiments.length ? " 🧪" : "";
+        return { key, icon, text: `[${code(key)}](${flagsUrl}/${flag.id})${experiment}` };
     });
-    return [
-        open ? "<details open>" : "<details>",
-        `<summary><b>Flags in this PR</b> · ${plural(rows.length, "flag")} · ${counts.join(" · ")}</summary>`,
-        "",
-        "| Status | Flag | Rollout | Used in |",
-        "|---|---|---|---|",
-        ...lines,
-        "",
-        "</details>",
-        "",
-    ];
+    items.sort((a, b) => STATUS_ORDER.indexOf(a.icon) - STATUS_ORDER.indexOf(b.icon) || a.key.localeCompare(b.key));
+    return [`**Flags in this PR:** ${items.map((i) => `${i.icon} ${i.text}`).join(" · ")}`, ""];
 }
 function renderText(findings, scannedReferences) {
     if (findings.length === 0)
