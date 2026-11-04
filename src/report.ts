@@ -37,12 +37,11 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
     const name = code(finding.key ?? finding.references[0].expression);
     const flag = finding.flagId === undefined ? name : `[${name}](${flagsUrl}/${finding.flagId})`;
     const where = finding.references.map((r) => location(r, context)).join(", ");
-    lines.push(`| ${icon} | ${flag} | ${cell(finding.message)} | ${where} |`);
+    const create = finding.create && finding.key ? ` · [Create it →](${createUrl(flagsUrl, finding.key, finding.create.variants)})` : "";
+    lines.push(`| ${icon} | ${flag} | ${cell(finding.message)}${create} | ${where} |`);
   }
 
-  const links = [`[View flags](${flagsUrl})`];
-  if (errors.some((f) => f.kind === "missing")) links.unshift(`[Create missing flags in PostHog](${flagsUrl}/new)`);
-  lines.push("", links.join(" · "), "", footer);
+  lines.push("", `[View flags](${flagsUrl})`, "", footer);
   return lines.join("\n") + "\n";
 }
 
@@ -79,6 +78,17 @@ export function annotations(findings: Finding[]): Annotation[] {
       column: r.column,
     })),
   );
+}
+
+// Prefills PostHog's new-flag form. The full /project/<id>/ path avoids a redirect, which would
+// re-encode the query and turn keys like `1e3` into numbers.
+export function createUrl(flagsUrl: string, key: string, variants: string[] | null): string {
+  const params = new URLSearchParams({ key });
+  if (variants) {
+    params.set("type", "multivariate");
+    params.set("variants", variants.join(","));
+  }
+  return `${flagsUrl}/new?${params.toString().replace(/%2C/g, ",")}`;
 }
 
 function plural(count: number, noun: string): string {

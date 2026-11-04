@@ -38,7 +38,7 @@ describe("renderMarkdown", () => {
       | ❌ | [\`old-banner\`](https://us.posthog.com/project/1/feature_flags/2) | Archived, but still used | [\`src/Home.tsx:17\`](https://github.com/o/r/blob/abc1234def/src/Home.tsx#L17), [\`src/Nav.tsx:8\`](https://github.com/o/r/blob/abc1234def/src/Nav.tsx#L8) |
       | ⚠️ | \`\` \`exp-\${x}\` \`\` | Dynamic key, can't be checked | [\`src/exp.ts:3\`](https://github.com/o/r/blob/abc1234def/src/exp.ts#L3) |
 
-      [Create missing flags in PostHog](https://us.posthog.com/project/1/feature_flags/new) · [View flags](https://us.posthog.com/project/1/feature_flags)
+      [View flags](https://us.posthog.com/project/1/feature_flags)
 
       <sub>flag-lint · hackathon project · updated for commit \`abc1234\`</sub>
       "
@@ -66,5 +66,28 @@ describe("annotations", () => {
       { severity: "error", title: "PostHog flag: old", message: "Archived, but still used", file: "src/b.ts", line: 7, column: 1 },
       { severity: "warning", title: "PostHog flag: flagName", message: "Dynamic key, can't be checked", file: "src/c.ts", line: 1, column: 1 },
     ]);
+  });
+});
+
+describe("create links", () => {
+  const withVariants = (key: string, values: string[]): FlagReference => ({
+    ...ref(key, "src/a.ts", 1),
+    variants: values.map((value, i) => ({ value, line: 2 + i, column: 1 })),
+  });
+  const rowFor = (key: string, markdown: string) => markdown.split("\n").find((l) => l.includes(`\`${key}\``))!;
+
+  it("links missing flags to a prefilled form, as multivariate when the code compares variants", () => {
+    const references = [ref("new-banner", "src/a.ts", 1), withVariants("layout", ["compact", "wide"]), withVariants("ab", ["control", "b"])];
+    const markdown = renderMarkdown(runChecks(references, []), references, context);
+    const base = "https://us.posthog.com/project/1/feature_flags/new";
+    expect(rowFor("new-banner", markdown)).toContain(`[Create it →](${base}?key=new-banner)`);
+    expect(rowFor("layout", markdown)).toContain(`[Create it →](${base}?key=layout&type=multivariate&variants=control,compact,wide)`);
+    expect(rowFor("ab", markdown)).toContain(`[Create it →](${base}?key=ab&type=multivariate&variants=control,b)`);
+  });
+
+  it("doesn't offer to create a likely typo", () => {
+    const references = [ref("new-chekout", "src/a.ts", 1)];
+    const flags = [{ id: 1, key: "new-checkout", active: true, archived: false, stale: false, variants: null }];
+    expect(renderMarkdown(runChecks(references, flags), references, context)).not.toContain("Create it");
   });
 });

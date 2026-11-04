@@ -9,6 +9,8 @@ export interface Finding {
   key: string | null;
   // Set when the flag exists in PostHog, to link to it.
   flagId?: number;
+  // Set for missing flags that aren't a likely typo: what a "create it" link should prefill.
+  create?: { variants: string[] | null };
   message: string;
   references: FlagReference[];
 }
@@ -26,6 +28,7 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
         kind: "missing",
         key,
         message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
+        create: suggestion ? undefined : { variants: inferVariants(refs) },
         references: refs,
       });
     } else if (flag.archived) {
@@ -91,6 +94,14 @@ function variantFindings(flag: Flag, refs: FlagReference[]): Finding[] {
       references: at,
     };
   });
+}
+
+// Variant names the code compares against, with `control` first since PostHog and experiments expect it.
+// null when the code never compares the value, so the flag is created as a boolean.
+function inferVariants(refs: FlagReference[]): string[] | null {
+  const used = [...new Set(refs.flatMap((r) => r.variants.map((v) => v.value)))];
+  if (used.length === 0) return null;
+  return used.includes("control") ? used : ["control", ...used];
 }
 
 function groupByKey(references: FlagReference[]): Map<string, FlagReference[]> {

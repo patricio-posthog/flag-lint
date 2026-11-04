@@ -29,6 +29,7 @@ function runChecks(references, flags) {
                 kind: "missing",
                 key,
                 message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
+                create: suggestion ? undefined : { variants: inferVariants(refs) },
                 references: refs,
             });
         }
@@ -97,6 +98,14 @@ function variantFindings(flag, refs) {
             references: at,
         };
     });
+}
+// Variant names the code compares against, with `control` first since PostHog and experiments expect it.
+// null when the code never compares the value, so the flag is created as a boolean.
+function inferVariants(refs) {
+    const used = [...new Set(refs.flatMap((r) => r.variants.map((v) => v.value)))];
+    if (used.length === 0)
+        return null;
+    return used.includes("control") ? used : ["control", ...used];
 }
 function groupByKey(references) {
     const groups = new Map();
@@ -527,6 +536,7 @@ exports.COMMENT_MARKER = void 0;
 exports.renderMarkdown = renderMarkdown;
 exports.renderText = renderText;
 exports.annotations = annotations;
+exports.createUrl = createUrl;
 exports.COMMENT_MARKER = "<!-- flag-lint -->";
 function renderMarkdown(findings, references, context) {
     const host = context.host.replace(/\/+$/, "");
@@ -552,12 +562,10 @@ function renderMarkdown(findings, references, context) {
         const name = code(finding.key ?? finding.references[0].expression);
         const flag = finding.flagId === undefined ? name : `[${name}](${flagsUrl}/${finding.flagId})`;
         const where = finding.references.map((r) => location(r, context)).join(", ");
-        lines.push(`| ${icon} | ${flag} | ${cell(finding.message)} | ${where} |`);
+        const create = finding.create && finding.key ? ` · [Create it →](${createUrl(flagsUrl, finding.key, finding.create.variants)})` : "";
+        lines.push(`| ${icon} | ${flag} | ${cell(finding.message)}${create} | ${where} |`);
     }
-    const links = [`[View flags](${flagsUrl})`];
-    if (errors.some((f) => f.kind === "missing"))
-        links.unshift(`[Create missing flags in PostHog](${flagsUrl}/new)`);
-    lines.push("", links.join(" · "), "", footer);
+    lines.push("", `[View flags](${flagsUrl})`, "", footer);
     return lines.join("\n") + "\n";
 }
 function renderText(findings, scannedReferences) {
@@ -580,6 +588,16 @@ function annotations(findings) {
         line: r.line,
         column: r.column,
     })));
+}
+// Prefills PostHog's new-flag form. The full /project/<id>/ path avoids a redirect, which would
+// re-encode the query and turn keys like `1e3` into numbers.
+function createUrl(flagsUrl, key, variants) {
+    const params = new URLSearchParams({ key });
+    if (variants) {
+        params.set("type", "multivariate");
+        params.set("variants", variants.join(","));
+    }
+    return `${flagsUrl}/new?${params.toString().replace(/%2C/g, ",")}`;
 }
 function plural(count, noun) {
     return `${count} ${noun}${count === 1 ? "" : "s"}`;
