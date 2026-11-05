@@ -63,11 +63,11 @@ function reachSection(context: ReportContext, flagsUrl: string): string[] {
   const rows = [...context.reach].sort((a, b) => b.users - a.users || a.key.localeCompare(b.key));
   return [
     "#### 👥 Who this PR can affect",
-    "Users and evaluations in the last 7 days, for every flag this PR touches.",
+    "Users who saw each flag in the last 7 days.",
     "",
-    "| Flag | Users | Evaluations |",
-    "|---|---:|---:|",
-    ...rows.map((r) => `| [${code(r.key)}](${flagsUrl}/${r.flagId}) | ${compact(r.users)} | ${compact(r.evaluations)} |`),
+    "| Flag | Users |",
+    "|---|---:|",
+    ...rows.map((r) => `| [${code(r.key)}](${flagsUrl}/${r.flagId}) | ${compact(r.users)} |`),
     "",
   ];
 }

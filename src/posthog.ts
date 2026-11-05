@@ -64,10 +64,10 @@ async function fetchAll(config: PostHogConfig, extraQuery: string): Promise<Flag
 
 export interface Reach {
   users: number;
-  evaluations: number;
 }
 
-// Distinct users and evaluations per flag over the last 7 days, from `$feature_flag_called` events.
+// Distinct users per flag over the last 7 days, from `$feature_flag_called` events. Event counts
+// aren't reported: ingestion dedupes these events per user, flag and response for an hour.
 // Keys come from the project's own flag list, but are still checked against the flag key charset
 // before going into the query.
 export async function fetchReach(config: PostHogConfig, keys: string[]): Promise<Map<string, Reach>> {
@@ -75,7 +75,7 @@ export async function fetchReach(config: PostHogConfig, keys: string[]): Promise
   const reach = new Map<string, Reach>();
   if (safe.length === 0) return reach;
   const query = `
-    SELECT properties.$feature_flag AS flag, count(DISTINCT person_id) AS users, count() AS evaluations
+    SELECT properties.$feature_flag AS flag, count(DISTINCT person_id) AS users
     FROM events
     WHERE event = '$feature_flag_called'
       AND timestamp > now() - INTERVAL 7 DAY
@@ -91,7 +91,7 @@ export async function fetchReach(config: PostHogConfig, keys: string[]): Promise
     const body = await response.text();
     throw new Error(`PostHog query API ${response.status}: ${body.slice(0, 300)}`);
   }
-  const data = (await response.json()) as { results: [string, number, number][] };
-  for (const [flag, users, evaluations] of data.results) reach.set(flag, { users, evaluations });
+  const data = (await response.json()) as { results: [string, number][] };
+  for (const [flag, users] of data.results) reach.set(flag, { users });
   return reach;
 }

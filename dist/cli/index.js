@@ -600,7 +600,8 @@ async function fetchAll(config, extraQuery) {
     }
     return flags;
 }
-// Distinct users and evaluations per flag over the last 7 days, from `$feature_flag_called` events.
+// Distinct users per flag over the last 7 days, from `$feature_flag_called` events. Event counts
+// aren't reported: ingestion dedupes these events per user, flag and response for an hour.
 // Keys come from the project's own flag list, but are still checked against the flag key charset
 // before going into the query.
 async function fetchReach(config, keys) {
@@ -609,7 +610,7 @@ async function fetchReach(config, keys) {
     if (safe.length === 0)
         return reach;
     const query = `
-    SELECT properties.$feature_flag AS flag, count(DISTINCT person_id) AS users, count() AS evaluations
+    SELECT properties.$feature_flag AS flag, count(DISTINCT person_id) AS users
     FROM events
     WHERE event = '$feature_flag_called'
       AND timestamp > now() - INTERVAL 7 DAY
@@ -626,8 +627,8 @@ async function fetchReach(config, keys) {
         throw new Error(`PostHog query API ${response.status}: ${body.slice(0, 300)}`);
     }
     const data = (await response.json());
-    for (const [flag, users, evaluations] of data.results)
-        reach.set(flag, { users, evaluations });
+    for (const [flag, users] of data.results)
+        reach.set(flag, { users });
     return reach;
 }
 
@@ -688,11 +689,11 @@ function reachSection(context, flagsUrl) {
     const rows = [...context.reach].sort((a, b) => b.users - a.users || a.key.localeCompare(b.key));
     return [
         "#### 👥 Who this PR can affect",
-        "Users and evaluations in the last 7 days, for every flag this PR touches.",
+        "Users who saw each flag in the last 7 days.",
         "",
-        "| Flag | Users | Evaluations |",
-        "|---|---:|---:|",
-        ...rows.map((r) => `| [${code(r.key)}](${flagsUrl}/${r.flagId}) | ${compact(r.users)} | ${compact(r.evaluations)} |`),
+        "| Flag | Users |",
+        "|---|---:|",
+        ...rows.map((r) => `| [${code(r.key)}](${flagsUrl}/${r.flagId}) | ${compact(r.users)} |`),
         "",
     ];
 }

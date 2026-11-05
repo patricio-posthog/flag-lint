@@ -9,8 +9,8 @@ describe("fetchReach", () => {
     vi.unstubAllGlobals();
   });
 
-  it("queries $feature_flag_called for the last 7 days, only for keys with a safe charset", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ results: [["on", 3400, 12000]] }) });
+  it("queries distinct users of $feature_flag_called for the last 7 days, only for keys with a safe charset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ results: [["on", 3400]] }) });
     vi.stubGlobal("fetch", fetchMock);
 
     const reach = await fetchReach(config, ["on", "other", "bad'key"]);
@@ -22,7 +22,8 @@ describe("fetchReach", () => {
     expect(query).toContain("INTERVAL 7 DAY");
     expect(query).toContain("IN ('on', 'other')");
     expect(query).not.toContain("bad'key");
-    expect([...reach]).toEqual([["on", { users: 3400, evaluations: 12000 }]]);
+    expect(query).not.toContain("count()");
+    expect([...reach]).toEqual([["on", { users: 3400 }]]);
   });
 
   it("throws on API errors so the action can skip the section", async () => {
@@ -37,19 +38,19 @@ describe("reach section", () => {
 
   it("lists every flag's reach in its own section, busiest first", () => {
     const reach = [
-      { key: "quiet", flagId: 2, users: 0, evaluations: 0 },
-      { key: "on", flagId: 1, users: 3400, evaluations: 1_250_000 },
+      { key: "quiet", flagId: 2, users: 0 },
+      { key: "on", flagId: 1, users: 1_250_000 },
     ];
     const markdown = renderMarkdown([], [ref], { ...context, reach });
     const section = markdown.slice(markdown.indexOf("#### 👥"), markdown.indexOf("<sub>"));
     expect(section.split("\n")).toEqual([
       "#### 👥 Who this PR can affect",
-      "Users and evaluations in the last 7 days, for every flag this PR touches.",
+      "Users who saw each flag in the last 7 days.",
       "",
-      "| Flag | Users | Evaluations |",
-      "|---|---:|---:|",
-      "| [`on`](https://us.posthog.com/project/1/feature_flags/1) | 3.4k | 1.3M |",
-      "| [`quiet`](https://us.posthog.com/project/1/feature_flags/2) | 0 | 0 |",
+      "| Flag | Users |",
+      "|---|---:|",
+      "| [`on`](https://us.posthog.com/project/1/feature_flags/1) | 1.3M |",
+      "| [`quiet`](https://us.posthog.com/project/1/feature_flags/2) | 0 |",
       "",
       "",
     ]);

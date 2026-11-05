@@ -91,7 +91,7 @@ async function reachOf(refs: FlagReference[], flags: Flag[], config: PostHogConf
   if (touched.length === 0) return undefined;
   try {
     const reach = await fetchReach(config, touched);
-    return touched.map((key) => ({ key, flagId: byKey.get(key)!.id, ...(reach.get(key) ?? { users: 0, evaluations: 0 }) }));
+    return touched.map((key) => ({ key, flagId: byKey.get(key)!.id, ...(reach.get(key) ?? { users: 0 }) }));
   } catch (error) {
     core.warning(`Skipping reach: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
