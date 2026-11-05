@@ -13,7 +13,7 @@ const ref = (key: string | null, line = 1): FlagReference => ({
   variants: [],
   runtime: null,
 });
-const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], ...extra });
+const flag = (key: string, archived = false, extra: Partial<Flag> = {}): Flag => ({ id: 1, key, active: true, archived, stale: false, variants: null, evaluationRuntime: null, runningExperiments: [], rolledOut: false, ...extra });
 
 describe("runChecks", () => {
   it("reports missing flags once per key with every reference", () => {
@@ -101,7 +101,7 @@ describe("runtime and experiment checks", () => {
   });
 
   it("warns when a flag drives a running experiment, linking to it", () => {
-    const findings = runChecks([ref("exp")], [flag("exp", false, { runningExperiments: [{ id: 12, name: "New checkout" }] })]);
+    const findings = runChecks([ref("exp")], [flag("exp", false, { runningExperiments: [{ id: 12, name: "New checkout" }], rolledOut: false })]);
     expect(findings).toMatchObject([
       {
         kind: "experiment",

@@ -4,6 +4,8 @@ export const SUGGESTION_MARKER = "<!-- flag-lint-suggestion -->";
 
 export interface Suggestion {
   path: string;
+  // First line of a multi-line suggestion; `line` is the last.
+  startLine?: number;
   line: number;
   body: string;
 }
@@ -52,6 +54,45 @@ export function buildSuggestions(
     }
   }
   return suggestions;
+}
+
+// For a fully rolled out flag, replace `if (flag) { body }` with the body, one indent level out.
+// Every line of the `if` must be in the diff, since GitHub only takes suggestions there.
+export function buildCleanups(
+  findings: Finding[],
+  lineOf: (path: string, line: number) => string | undefined,
+  changed: Map<string, Set<number>>,
+): Suggestion[] {
+  const suggestions: Suggestion[] = [];
+  for (const finding of findings) {
+    if (finding.kind !== "rolled-out") continue;
+    for (const ref of finding.references) {
+      const guard = ref.guard;
+      if (!guard) continue;
+      const lines = changed.get(ref.file);
+      const range = Array.from({ length: guard.endLine - guard.startLine + 1 }, (_, i) => guard.startLine + i);
+      if (!range.every((n) => lines?.has(n))) continue;
+      const header = lineOf(ref.file, guard.startLine);
+      const body = Array.from({ length: guard.bodyEndLine - guard.bodyStartLine + 1 }, (_, i) => lineOf(ref.file, guard.bodyStartLine + i));
+      if (header === undefined || body.some((l) => l === undefined)) continue;
+      const outer = indentOf(header);
+      const inner = indentOf(body.find((l) => l!.trim() !== "") ?? "");
+      if (!inner.startsWith(outer) || inner === outer) continue;
+      const step = inner.slice(outer.length);
+      const unwrapped = body.map((l) => (l!.startsWith(outer + step) ? outer + l!.slice(outer.length + step.length) : l!));
+      suggestions.push({
+        path: ref.file,
+        startLine: guard.startLine,
+        line: guard.endLine,
+        body: [SUGGESTION_MARKER, `**flag-lint:** \`${finding.key}\` is on for everyone, so this check is always true.`, "", "```suggestion", ...unwrapped, "```"].join("\n"),
+      });
+    }
+  }
+  return suggestions;
+}
+
+function indentOf(line: string): string {
+  return line.match(/^\s*/)![0];
 }
 
 function escapeRegExp(text: string): string {

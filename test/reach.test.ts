@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchReach } from "../src/posthog";
+import { fetchFlags, fetchReach } from "../src/posthog";
 import { renderMarkdown } from "../src/report";
 
 const config = { host: "https://us.posthog.com/", projectId: "1", apiKey: "phx_test" };
@@ -58,5 +58,33 @@ describe("reach section", () => {
 
   it("leaves the section out without reach data", () => {
     expect(renderMarkdown([], [ref], context)).not.toContain("Who this PR can affect");
+  });
+});
+
+describe("rolled out flags", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("only counts boolean, person-based flags on for everyone with no conditions", async () => {
+    const flag = (key: string, extra: Record<string, unknown> = {}, filters: Record<string, unknown> = {}) => ({
+      id: 1, key, active: true, archived: false, ...extra,
+      filters: { groups: [{ properties: [], rollout_percentage: 100 }], ...filters },
+    });
+    const live = [
+      flag("everyone"),
+      flag("null-rollout", {}, { groups: [{ properties: [], rollout_percentage: null }] }),
+      flag("half", {}, { groups: [{ properties: [], rollout_percentage: 50 }] }),
+      flag("targeted", {}, { groups: [{ properties: [{ key: "email" }], rollout_percentage: 100 }] }),
+      flag("off", { active: false }),
+      flag("multi", {}, { multivariate: { variants: [{ key: "a" }] } }),
+      flag("groups", {}, { aggregation_group_type_index: 0 }),
+    ];
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => ({ results: url.includes("archived") || url.includes("STALE") ? [] : live, next: null }),
+    })));
+    const flags = await fetchFlags(config);
+    expect(flags.filter((f) => f.rolledOut).map((f) => f.key)).toEqual(["everyone", "null-rollout"]);
   });
 });

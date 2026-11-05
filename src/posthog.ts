@@ -9,6 +9,9 @@ export interface Flag {
   // "client" or "server" when the flag is limited to one kind of SDK; "all" or null otherwise.
   evaluationRuntime: string | null;
   runningExperiments: { id: number; name: string }[];
+  // On, boolean, person-based and with a release condition that matches everyone at 100%,
+  // so every boolean check of it returns true.
+  rolledOut: boolean;
 }
 
 export interface PostHogConfig {
@@ -55,11 +58,23 @@ async function fetchAll(config: PostHogConfig, extraQuery: string): Promise<Flag
         runningExperiments: (f.experiment_set_metadata ?? [])
           .filter((e: { is_running: boolean }) => e.is_running)
           .map((e: { id: number; name: string }) => ({ id: e.id, name: e.name })),
+        rolledOut: isRolledOut(f),
       });
     }
     url = page.next;
   }
   return flags;
+}
+
+function isRolledOut(f: any): boolean {
+  const groups: { properties?: unknown[]; rollout_percentage?: number | null }[] = f.filters?.groups ?? [];
+  return (
+    Boolean(f.active) &&
+    !f.archived &&
+    !f.filters?.multivariate &&
+    f.filters?.aggregation_group_type_index == null &&
+    groups.some((g) => !g.properties?.length && (g.rollout_percentage ?? 100) === 100)
+  );
 }
 
 export interface Reach {

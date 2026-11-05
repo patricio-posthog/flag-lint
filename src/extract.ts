@@ -19,6 +19,9 @@ export interface FlagReference {
   runtime: Runtime | null;
   // Set on calls the PR deleted; file and line then refer to the base version.
   removed?: boolean;
+  // Set when the call is the whole condition of an `if` with no else branch (1-indexed lines,
+  // body excludes the braces), so a fully rolled out flag can be unwrapped to just its body.
+  guard?: { startLine: number; endLine: number; bodyStartLine: number; bodyEndLine: number };
 }
 
 export type Runtime = "client" | "server";
@@ -54,6 +57,8 @@ const CLIENT_PACKAGES = /^(posthog-js|posthog-react-native|@posthog\/react)(\/|$
 const SERVER_PACKAGES = /^posthog-node(\/|$)/;
 
 // Calls whose return value is the variant name, so comparisons against them are worth checking.
+// Calls that return whether the flag is on, the only ones an `if` can be unwrapped around.
+const BOOLEAN_METHODS = new Set(["isFeatureEnabled", "isEnabled", "feature_enabled", "is_feature_enabled", "is_enabled"]);
 const VARIANT_METHODS = new Set(["getFeatureFlag", "useFeatureFlagVariantKey", "getFlag", "get_feature_flag", "get_flag"]);
 
 const EXTENSIONS: Record<string, Language> = {
@@ -126,7 +131,8 @@ export async function extractReferences(
         : jsCall(node, methods, snapshotMethods);
       if (ref) {
         const variants = VARIANT_METHODS.has(ref.method) ? variantUses(node, isPython) : [];
-        references.push({ ...ref, variants, runtime: runtimeOf(ref.method), file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+        const guard = BOOLEAN_METHODS.has(ref.method) ? ifGuard(node, isPython) : undefined;
+        references.push({ ...ref, variants, guard, runtime: runtimeOf(ref.method), file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
       }
     } else if (!isPython && (node.type === "jsx_opening_element" || node.type === "jsx_self_closing_element")) {
       const ref = jsxFeature(node);
@@ -233,6 +239,29 @@ function variantUses(call: Parser.SyntaxNode, isPython: boolean): VariantUse[] {
 }
 
 // Climb through wrappers that don't change the value: `await x`, `(x)`, `x!`.
+// `if (flagCall) { ... }` / `if flag_call:` with nothing else in the condition and no else/elif.
+// JS needs the opening brace on the `if` line and the closing brace alone on its own line.
+function ifGuard(call: Parser.SyntaxNode, isPython: boolean): FlagReference["guard"] {
+  const condition = unwrap(call);
+  const stmt = condition.parent;
+  if (stmt?.type !== "if_statement" || !sameNode(stmt.childForFieldName("condition"), condition)) return undefined;
+  if (stmt.childForFieldName("alternative") || stmt.children.some((c) => c.type === "elif_clause" || c.type === "else_clause")) {
+    return undefined;
+  }
+  const body = stmt.childForFieldName("consequence");
+  if (!body) return undefined;
+  const start = stmt.startPosition.row + 1;
+  const end = stmt.endPosition.row + 1;
+  if (isPython) {
+    if (body.type !== "block" || body.startPosition.row + 1 <= start) return undefined;
+    return { startLine: start, endLine: end, bodyStartLine: body.startPosition.row + 1, bodyEndLine: body.endPosition.row + 1 };
+  }
+  if (body.type !== "statement_block" || body.startPosition.row !== stmt.startPosition.row || body.endPosition.row === body.startPosition.row) {
+    return undefined;
+  }
+  return { startLine: start, endLine: end, bodyStartLine: start + 1, bodyEndLine: end - 1 };
+}
+
 function unwrap(node: Parser.SyntaxNode): Parser.SyntaxNode {
   let current = node;
   while (

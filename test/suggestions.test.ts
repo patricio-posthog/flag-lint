@@ -21,7 +21,7 @@ const flag = (key: string, variants: string[] | null = null) => ({
   stale: false,
   variants,
   evaluationRuntime: null,
-  runningExperiments: [],
+  runningExperiments: [], rolledOut: false,
 });
 
 describe("addedLines", () => {

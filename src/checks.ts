@@ -5,7 +5,7 @@ export type Severity = "error" | "warning";
 
 export interface Finding {
   severity: Severity;
-  kind: "missing" | "archived" | "disabled" | "stale" | "variant" | "runtime" | "experiment" | "experiment-removed" | "dynamic";
+  kind: "missing" | "archived" | "disabled" | "stale" | "rolled-out" | "variant" | "runtime" | "experiment" | "experiment-removed" | "dynamic";
   key: string | null;
   // Set when the flag exists in PostHog, to link to it.
   flagId?: number;
@@ -47,6 +47,15 @@ export function runChecks(references: FlagReference[], flags: Flag[], removed: F
       findings.push({ severity: "error", kind: "archived", key, flagId: flag.id, message: "Archived, but still used", references: refs });
     } else if (!flag.active) {
       findings.push({ severity: "warning", kind: "disabled", key, flagId: flag.id, message: "Disabled, so it always evaluates to false", references: refs });
+    } else if (flag.rolledOut && refs.some((r) => r.guard)) {
+      findings.push({
+        severity: "warning",
+        kind: "rolled-out",
+        key,
+        flagId: flag.id,
+        message: "Rolled out to everyone with no conditions, so this check is always true. The `if` can go",
+        references: refs.filter((r) => r.guard),
+      });
     } else if (flag.stale) {
       findings.push({
         severity: "warning",

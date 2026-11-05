@@ -47,6 +47,16 @@ function runChecks(references, flags, removed = []) {
         else if (!flag.active) {
             findings.push({ severity: "warning", kind: "disabled", key, flagId: flag.id, message: "Disabled, so it always evaluates to false", references: refs });
         }
+        else if (flag.rolledOut && refs.some((r) => r.guard)) {
+            findings.push({
+                severity: "warning",
+                kind: "rolled-out",
+                key,
+                flagId: flag.id,
+                message: "Rolled out to everyone with no conditions, so this check is always true. The `if` can go",
+                references: refs.filter((r) => r.guard),
+            });
+        }
         else if (flag.stale) {
             findings.push({
                 severity: "warning",
@@ -297,6 +307,8 @@ const CLIENT_METHODS = new Set(["useFeatureFlagEnabled", "useFeatureFlagVariantK
 const CLIENT_PACKAGES = /^(posthog-js|posthog-react-native|@posthog\/react)(\/|$)/;
 const SERVER_PACKAGES = /^posthog-node(\/|$)/;
 // Calls whose return value is the variant name, so comparisons against them are worth checking.
+// Calls that return whether the flag is on, the only ones an `if` can be unwrapped around.
+const BOOLEAN_METHODS = new Set(["isFeatureEnabled", "isEnabled", "feature_enabled", "is_feature_enabled", "is_enabled"]);
 const VARIANT_METHODS = new Set(["getFeatureFlag", "useFeatureFlagVariantKey", "getFlag", "get_feature_flag", "get_flag"]);
 const EXTENSIONS = {
     ".ts": "typescript",
@@ -352,7 +364,8 @@ async function extractReferences(source, file, options = {}) {
                 : jsCall(node, methods, snapshotMethods);
             if (ref) {
                 const variants = VARIANT_METHODS.has(ref.method) ? variantUses(node, isPython) : [];
-                references.push({ ...ref, variants, runtime: runtimeOf(ref.method), file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
+                const guard = BOOLEAN_METHODS.has(ref.method) ? ifGuard(node, isPython) : undefined;
+                references.push({ ...ref, variants, guard, runtime: runtimeOf(ref.method), file, line: node.startPosition.row + 1, column: node.startPosition.column + 1 });
             }
         }
         else if (!isPython && (node.type === "jsx_opening_element" || node.type === "jsx_self_closing_element")) {
@@ -459,6 +472,31 @@ function variantUses(call, isPython) {
     });
 }
 // Climb through wrappers that don't change the value: `await x`, `(x)`, `x!`.
+// `if (flagCall) { ... }` / `if flag_call:` with nothing else in the condition and no else/elif.
+// JS needs the opening brace on the `if` line and the closing brace alone on its own line.
+function ifGuard(call, isPython) {
+    const condition = unwrap(call);
+    const stmt = condition.parent;
+    if (stmt?.type !== "if_statement" || !sameNode(stmt.childForFieldName("condition"), condition))
+        return undefined;
+    if (stmt.childForFieldName("alternative") || stmt.children.some((c) => c.type === "elif_clause" || c.type === "else_clause")) {
+        return undefined;
+    }
+    const body = stmt.childForFieldName("consequence");
+    if (!body)
+        return undefined;
+    const start = stmt.startPosition.row + 1;
+    const end = stmt.endPosition.row + 1;
+    if (isPython) {
+        if (body.type !== "block" || body.startPosition.row + 1 <= start)
+            return undefined;
+        return { startLine: start, endLine: end, bodyStartLine: body.startPosition.row + 1, bodyEndLine: body.endPosition.row + 1 };
+    }
+    if (body.type !== "statement_block" || body.startPosition.row !== stmt.startPosition.row || body.endPosition.row === body.startPosition.row) {
+        return undefined;
+    }
+    return { startLine: start, endLine: end, bodyStartLine: start + 1, bodyEndLine: end - 1 };
+}
 function unwrap(node) {
     let current = node;
     while (current.parent &&
@@ -594,11 +632,20 @@ async function fetchAll(config, extraQuery) {
                 runningExperiments: (f.experiment_set_metadata ?? [])
                     .filter((e) => e.is_running)
                     .map((e) => ({ id: e.id, name: e.name })),
+                rolledOut: isRolledOut(f),
             });
         }
         url = page.next;
     }
     return flags;
+}
+function isRolledOut(f) {
+    const groups = f.filters?.groups ?? [];
+    return (Boolean(f.active) &&
+        !f.archived &&
+        !f.filters?.multivariate &&
+        f.filters?.aggregation_group_type_index == null &&
+        groups.some((g) => !g.properties?.length && (g.rollout_percentage ?? 100) === 100));
 }
 // Distinct users per flag over the last 7 days, from `$feature_flag_called` events. Event counts
 // aren't reported: ingestion dedupes these events per user, flag and response for an hour.

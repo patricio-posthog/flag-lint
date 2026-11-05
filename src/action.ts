@@ -7,7 +7,7 @@ import { annotations, COMMENT_MARKER, renderMarkdown } from "./report";
 import fs from "fs";
 import path from "path";
 import { listFiles, removedReferences, scan } from "./scan";
-import { addedLines, buildSuggestions, diffSuggestions } from "./suggestions";
+import { addedLines, buildCleanups, buildSuggestions, diffSuggestions } from "./suggestions";
 
 async function run() {
   const apiKey = core.getInput("api-key", { required: true });
@@ -54,7 +54,8 @@ async function run() {
   if (pr && shouldSuggest) {
     const changed = new Map(prFiles.map((f) => [f.filename, addedLines(f.patch)]));
     const lineOf = (file: string, line: number) => fs.readFileSync(path.join(dir, file), "utf8").split("\n")[line - 1];
-    await syncSuggestions(octokit, owner, repo, pr.number, pr.head.sha, buildSuggestions(findings, lineOf, changed));
+    const wanted = [...buildSuggestions(findings, lineOf, changed), ...buildCleanups(findings, lineOf, changed)];
+    await syncSuggestions(octokit, owner, repo, pr.number, pr.head.sha, wanted);
   }
   if (shouldAnnotate) {
     for (const a of annotations(findings)) {
@@ -154,7 +155,13 @@ async function syncSuggestions(
       pull_number: pullNumber,
       commit_id: commitId,
       event: "COMMENT",
-      comments: create.map((s) => ({ path: s.path, line: s.line, side: "RIGHT" as const, body: s.body })),
+      comments: create.map((s) => ({
+        path: s.path,
+        line: s.line,
+        side: "RIGHT" as const,
+        ...(s.startLine !== undefined && s.startLine < s.line ? { start_line: s.startLine, start_side: "RIGHT" as const } : {}),
+        body: s.body,
+      })),
     });
   }
 }

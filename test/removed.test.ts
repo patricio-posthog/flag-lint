@@ -27,7 +27,7 @@ describe("removedReferences", () => {
 
 describe("experiment-removed check", () => {
   const flag = (key: string, runningExperiments: { id: number; name: string }[] = []) => ({
-    id: 7, key, active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments,
+    id: 7, key, active: true, archived: false, stale: false, variants: null, evaluationRuntime: null, runningExperiments, rolledOut: false,
   });
   const removedRef = { key: "exp", expression: '"exp"', method: "isFeatureEnabled", file: "a.ts", line: 2, column: 1, variants: [], runtime: null, removed: true };
   const keptRef = { ...removedRef, line: 1, removed: undefined };
