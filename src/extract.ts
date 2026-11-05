@@ -17,6 +17,8 @@ export interface FlagReference {
   variants: VariantUse[];
   // Where the call runs, when it can be told from the SDK in use. null when it can't.
   runtime: Runtime | null;
+  // Set on calls the PR deleted; file and line then refer to the base version.
+  removed?: boolean;
 }
 
 export type Runtime = "client" | "server";

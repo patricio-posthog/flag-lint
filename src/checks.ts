@@ -5,7 +5,7 @@ export type Severity = "error" | "warning";
 
 export interface Finding {
   severity: Severity;
-  kind: "missing" | "archived" | "disabled" | "stale" | "variant" | "runtime" | "experiment" | "dynamic";
+  kind: "missing" | "archived" | "disabled" | "stale" | "variant" | "runtime" | "experiment" | "experiment-removed" | "dynamic";
   key: string | null;
   // Set when the flag exists in PostHog, to link to it.
   flagId?: number;
@@ -19,9 +19,16 @@ export interface Finding {
   references: FlagReference[];
 }
 
-export function runChecks(references: FlagReference[], flags: Flag[]): Finding[] {
+// `removed` are flag calls the PR deleted (see removedReferences), checked only against experiments.
+export function runChecks(references: FlagReference[], flags: Flag[], removed: FlagReference[] = []): Finding[] {
   const byKey = new Map(flags.map((f) => [f.key, f]));
   const findings: Finding[] = [];
+  const removedFindings = [...groupByKey(removed)].flatMap(([key, refs]) => {
+    const flag = byKey.get(key);
+    return flag ? experimentRemovedFindings(flag, refs) : [];
+  });
+  const removedKeys = new Set(removedFindings.map((f) => f.key));
+  findings.push(...removedFindings);
 
   for (const [key, refs] of groupByKey(references)) {
     const flag = byKey.get(key);
@@ -51,7 +58,12 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
       });
     }
     if (flag && !flag.archived) {
-      findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), ...experimentFindings(flag, refs));
+      findings.push(
+        ...variantFindings(flag, refs),
+        ...runtimeFindings(flag, refs),
+        // A removal error already covers the experiment; don't also warn about the remaining calls.
+        ...(removedKeys.has(key) ? [] : experimentFindings(flag, refs)),
+      );
     }
   }
 
@@ -131,6 +143,22 @@ function experimentFindings(flag: Flag, refs: FlagReference[]): Finding[] {
       message: `Drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Changing this code can skew the results`,
       links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
       references: refs,
+    },
+  ];
+}
+
+function experimentRemovedFindings(flag: Flag, removed: FlagReference[]): Finding[] {
+  if (flag.runningExperiments.length === 0) return [];
+  const names = flag.runningExperiments.map((e) => `"${e.name}"`).join(", ");
+  return [
+    {
+      severity: "error",
+      kind: "experiment-removed",
+      key: flag.key,
+      flagId: flag.id,
+      message: `This PR removes code for a flag that drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Removing it now breaks the results`,
+      links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
+      references: removed,
     },
   ];
 }

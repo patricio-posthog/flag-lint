@@ -17,9 +17,16 @@ var Module=void 0!==Module?Module:{},TreeSitter=function(){var initPromise,docum
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runChecks = runChecks;
 exports.closestKey = closestKey;
-function runChecks(references, flags) {
+// `removed` are flag calls the PR deleted (see removedReferences), checked only against experiments.
+function runChecks(references, flags, removed = []) {
     const byKey = new Map(flags.map((f) => [f.key, f]));
     const findings = [];
+    const removedFindings = [...groupByKey(removed)].flatMap(([key, refs]) => {
+        const flag = byKey.get(key);
+        return flag ? experimentRemovedFindings(flag, refs) : [];
+    });
+    const removedKeys = new Set(removedFindings.map((f) => f.key));
+    findings.push(...removedFindings);
     for (const [key, refs] of groupByKey(references)) {
         const flag = byKey.get(key);
         if (!flag) {
@@ -51,7 +58,9 @@ function runChecks(references, flags) {
             });
         }
         if (flag && !flag.archived) {
-            findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), ...experimentFindings(flag, refs));
+            findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), 
+            // A removal error already covers the experiment; don't also warn about the remaining calls.
+            ...(removedKeys.has(key) ? [] : experimentFindings(flag, refs)));
         }
     }
     for (const ref of references.filter((r) => r.key === null)) {
@@ -130,6 +139,22 @@ function experimentFindings(flag, refs) {
             message: `Drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Changing this code can skew the results`,
             links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
             references: refs,
+        },
+    ];
+}
+function experimentRemovedFindings(flag, removed) {
+    if (flag.runningExperiments.length === 0)
+        return [];
+    const names = flag.runningExperiments.map((e) => `"${e.name}"`).join(", ");
+    return [
+        {
+            severity: "error",
+            kind: "experiment-removed",
+            key: flag.key,
+            flagId: flag.id,
+            message: `This PR removes code for a flag that drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Removing it now breaks the results`,
+            links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
+            references: removed,
         },
     ];
 }
@@ -636,8 +661,9 @@ function renderText(findings, scannedReferences) {
         .join("\n") + "\n");
 }
 // One annotation per reference, so each call site gets marked in the PR's "Files changed" tab.
+// Removed calls have no line in the PR's version of the file to annotate.
 function annotations(findings) {
-    return findings.flatMap((f) => f.references.map((r) => ({
+    return findings.flatMap((f) => f.references.filter((r) => !r.removed).map((r) => ({
         severity: f.severity,
         title: `PostHog flag: ${f.key ?? r.expression}`,
         message: f.message.replace(/`/g, ""),
@@ -667,8 +693,9 @@ function cell(text) {
     return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 function location(ref, context) {
-    const label = `\`${ref.file}:${ref.line}\``;
-    return context.blobUrl ? `[${label}](${context.blobUrl}/${ref.file}#L${ref.line})` : label;
+    const label = `\`${ref.file}:${ref.line}\`${ref.removed ? " (removed)" : ""}`;
+    const blob = ref.removed ? context.baseBlobUrl : context.blobUrl;
+    return blob ? `[${label}](${blob}/${ref.file}#L${ref.line})` : label;
 }
 
 
@@ -685,6 +712,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFiles = listFiles;
 exports.scan = scan;
+exports.removedReferences = removedReferences;
 const child_process_1 = __nccwpck_require__(317);
 const fs_1 = __importDefault(__nccwpck_require__(896));
 const path_1 = __importDefault(__nccwpck_require__(928));
@@ -719,6 +747,24 @@ async function scan(dir, files, wrappers = []) {
         references.push(...(await (0, extract_1.extractReferences)(source, file, { wrappers })));
     }
     return references;
+}
+// Flag calls the PR removed from one file: present in the base version, with their line no longer
+// in the new version, capped by how many uses of that flag the file lost. Moving or reformatting a
+// call therefore doesn't count as removing it. Returned references point at the base version.
+function removedReferences(baseRefs, baseSource, headRefs, headSource) {
+    const headLines = new Set((headSource ?? "").split("\n").map((l) => l.trim()));
+    const baseLines = baseSource.split("\n");
+    const removed = [];
+    const keys = new Set(baseRefs.flatMap((r) => (r.key === null ? [] : [r.key])));
+    for (const key of keys) {
+        const before = baseRefs.filter((r) => r.key === key);
+        const lost = before.length - headRefs.filter((r) => r.key === key).length;
+        if (lost <= 0)
+            continue;
+        const gone = before.filter((r) => !headLines.has((baseLines[r.line - 1] ?? "").trim()));
+        removed.push(...gone.slice(0, lost).map((r) => ({ ...r, removed: true })));
+    }
+    return removed;
 }
 
 

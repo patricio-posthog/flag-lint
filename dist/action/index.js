@@ -29987,19 +29987,22 @@ async function run() {
     const octokit = github.getOctokit(token);
     const { owner, repo } = github.context.repo;
     // Ask the API for the PR's files instead of `git diff`, so a shallow checkout is enough.
-    const prFiles = pr
-        ? (await octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 })).filter((f) => f.status !== "removed" && (0, extract_1.languageFor)(f.filename))
+    const allPrFiles = pr
+        ? (await octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 })).filter((f) => (0, extract_1.languageFor)(f.filename) || (f.previous_filename && (0, extract_1.languageFor)(f.previous_filename)))
         : [];
+    const prFiles = allPrFiles.filter((f) => f.status !== "removed" && (0, extract_1.languageFor)(f.filename));
     const files = pr ? prFiles.map((f) => f.filename) : (0, scan_1.listFiles)(dir);
     core.info(`Scanning ${files.length} file(s)`);
     const references = await (0, scan_1.scan)(dir, files, wrappers);
     const flags = await (0, posthog_1.fetchFlags)({ host, projectId, apiKey });
-    const findings = (0, checks_1.runChecks)(references, flags);
+    const removed = pr ? await findRemovedReferences(octokit, owner, repo, pr.base.sha, allPrFiles, references, dir, wrappers) : [];
+    const findings = (0, checks_1.runChecks)(references, flags, removed);
     const sha = pr?.head.sha ?? github.context.sha;
     const blobUrl = `${github.context.serverUrl}/${owner}/${repo}/blob/${sha}`;
     // Re-running this run re-reads PostHog, so a flag fixed there turns the check green without a push.
     const rerunUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
-    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, sha, rerunUrl });
+    const baseBlobUrl = pr ? `${github.context.serverUrl}/${owner}/${repo}/blob/${pr.base.sha}` : undefined;
+    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, baseBlobUrl, sha, rerunUrl });
     await core.summary.addRaw(body).write();
     if (pr && shouldComment)
         await upsertComment(octokit, owner, repo, pr.number, body);
@@ -30026,6 +30029,33 @@ async function upsertComment(octokit, owner, repo, issueNumber, body) {
     }
     else {
         await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+    }
+}
+// Compares each changed file with its version on the base branch, read through the API so a
+// shallow checkout is enough. Renamed files are compared with their previous path.
+async function findRemovedReferences(octokit, owner, repo, baseSha, files, references, dir, wrappers) {
+    const removed = [];
+    for (const file of files) {
+        if (file.status === "added")
+            continue;
+        const basePath = file.previous_filename ?? file.filename;
+        const baseSource = await fileAt(octokit, owner, repo, basePath, baseSha);
+        if (baseSource === null)
+            continue;
+        const headSource = file.status === "removed" ? null : fs_1.default.readFileSync(path_1.default.join(dir, file.filename), "utf8");
+        const baseRefs = await (0, extract_1.extractReferences)(baseSource, basePath, { wrappers });
+        const headRefs = references.filter((r) => r.file === file.filename);
+        removed.push(...(0, scan_1.removedReferences)(baseRefs, baseSource, headRefs, headSource));
+    }
+    return removed;
+}
+async function fileAt(octokit, owner, repo, filePath, ref) {
+    try {
+        const { data } = await octokit.rest.repos.getContent({ owner, repo, path: filePath, ref });
+        return "content" in data && typeof data.content === "string" ? Buffer.from(data.content, "base64").toString("utf8") : null;
+    }
+    catch {
+        return null;
     }
 }
 async function syncSuggestions(octokit, owner, repo, pullNumber, commitId, wanted) {
@@ -30057,9 +30087,16 @@ run().catch((error) => core.setFailed(error instanceof Error ? error.message : S
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runChecks = runChecks;
 exports.closestKey = closestKey;
-function runChecks(references, flags) {
+// `removed` are flag calls the PR deleted (see removedReferences), checked only against experiments.
+function runChecks(references, flags, removed = []) {
     const byKey = new Map(flags.map((f) => [f.key, f]));
     const findings = [];
+    const removedFindings = [...groupByKey(removed)].flatMap(([key, refs]) => {
+        const flag = byKey.get(key);
+        return flag ? experimentRemovedFindings(flag, refs) : [];
+    });
+    const removedKeys = new Set(removedFindings.map((f) => f.key));
+    findings.push(...removedFindings);
     for (const [key, refs] of groupByKey(references)) {
         const flag = byKey.get(key);
         if (!flag) {
@@ -30091,7 +30128,9 @@ function runChecks(references, flags) {
             });
         }
         if (flag && !flag.archived) {
-            findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), ...experimentFindings(flag, refs));
+            findings.push(...variantFindings(flag, refs), ...runtimeFindings(flag, refs), 
+            // A removal error already covers the experiment; don't also warn about the remaining calls.
+            ...(removedKeys.has(key) ? [] : experimentFindings(flag, refs)));
         }
     }
     for (const ref of references.filter((r) => r.key === null)) {
@@ -30170,6 +30209,22 @@ function experimentFindings(flag, refs) {
             message: `Drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Changing this code can skew the results`,
             links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
             references: refs,
+        },
+    ];
+}
+function experimentRemovedFindings(flag, removed) {
+    if (flag.runningExperiments.length === 0)
+        return [];
+    const names = flag.runningExperiments.map((e) => `"${e.name}"`).join(", ");
+    return [
+        {
+            severity: "error",
+            kind: "experiment-removed",
+            key: flag.key,
+            flagId: flag.id,
+            message: `This PR removes code for a flag that drives the running experiment${flag.runningExperiments.length > 1 ? "s" : ""} ${names}. Removing it now breaks the results`,
+            links: flag.runningExperiments.map((e) => ({ label: `View ${e.name}`, path: `experiments/${e.id}` })),
+            references: removed,
         },
     ];
 }
@@ -30622,8 +30677,9 @@ function renderText(findings, scannedReferences) {
         .join("\n") + "\n");
 }
 // One annotation per reference, so each call site gets marked in the PR's "Files changed" tab.
+// Removed calls have no line in the PR's version of the file to annotate.
 function annotations(findings) {
-    return findings.flatMap((f) => f.references.map((r) => ({
+    return findings.flatMap((f) => f.references.filter((r) => !r.removed).map((r) => ({
         severity: f.severity,
         title: `PostHog flag: ${f.key ?? r.expression}`,
         message: f.message.replace(/`/g, ""),
@@ -30653,8 +30709,9 @@ function cell(text) {
     return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 function location(ref, context) {
-    const label = `\`${ref.file}:${ref.line}\``;
-    return context.blobUrl ? `[${label}](${context.blobUrl}/${ref.file}#L${ref.line})` : label;
+    const label = `\`${ref.file}:${ref.line}\`${ref.removed ? " (removed)" : ""}`;
+    const blob = ref.removed ? context.baseBlobUrl : context.blobUrl;
+    return blob ? `[${label}](${blob}/${ref.file}#L${ref.line})` : label;
 }
 
 
@@ -30671,6 +30728,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFiles = listFiles;
 exports.scan = scan;
+exports.removedReferences = removedReferences;
 const child_process_1 = __nccwpck_require__(5317);
 const fs_1 = __importDefault(__nccwpck_require__(9896));
 const path_1 = __importDefault(__nccwpck_require__(6928));
@@ -30705,6 +30763,24 @@ async function scan(dir, files, wrappers = []) {
         references.push(...(await (0, extract_1.extractReferences)(source, file, { wrappers })));
     }
     return references;
+}
+// Flag calls the PR removed from one file: present in the base version, with their line no longer
+// in the new version, capped by how many uses of that flag the file lost. Moving or reformatting a
+// call therefore doesn't count as removing it. Returned references point at the base version.
+function removedReferences(baseRefs, baseSource, headRefs, headSource) {
+    const headLines = new Set((headSource ?? "").split("\n").map((l) => l.trim()));
+    const baseLines = baseSource.split("\n");
+    const removed = [];
+    const keys = new Set(baseRefs.flatMap((r) => (r.key === null ? [] : [r.key])));
+    for (const key of keys) {
+        const before = baseRefs.filter((r) => r.key === key);
+        const lost = before.length - headRefs.filter((r) => r.key === key).length;
+        if (lost <= 0)
+            continue;
+        const gone = before.filter((r) => !headLines.has((baseLines[r.line - 1] ?? "").trim()));
+        removed.push(...gone.slice(0, lost).map((r) => ({ ...r, removed: true })));
+    }
+    return removed;
 }
 
 

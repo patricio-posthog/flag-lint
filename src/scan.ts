@@ -34,3 +34,26 @@ export async function scan(dir: string, files: string[], wrappers: string[] = []
   }
   return references;
 }
+
+// Flag calls the PR removed from one file: present in the base version, with their line no longer
+// in the new version, capped by how many uses of that flag the file lost. Moving or reformatting a
+// call therefore doesn't count as removing it. Returned references point at the base version.
+export function removedReferences(
+  baseRefs: FlagReference[],
+  baseSource: string,
+  headRefs: FlagReference[],
+  headSource: string | null,
+): FlagReference[] {
+  const headLines = new Set((headSource ?? "").split("\n").map((l) => l.trim()));
+  const baseLines = baseSource.split("\n");
+  const removed: FlagReference[] = [];
+  const keys = new Set(baseRefs.flatMap((r) => (r.key === null ? [] : [r.key])));
+  for (const key of keys) {
+    const before = baseRefs.filter((r) => r.key === key);
+    const lost = before.length - headRefs.filter((r) => r.key === key).length;
+    if (lost <= 0) continue;
+    const gone = before.filter((r) => !headLines.has((baseLines[r.line - 1] ?? "").trim()));
+    removed.push(...gone.slice(0, lost).map((r) => ({ ...r, removed: true })));
+  }
+  return removed;
+}

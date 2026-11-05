@@ -1,12 +1,12 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { runChecks } from "./checks";
-import { languageFor } from "./extract";
+import { extractReferences, languageFor, type FlagReference } from "./extract";
 import { fetchFlags } from "./posthog";
 import { annotations, COMMENT_MARKER, renderMarkdown } from "./report";
 import fs from "fs";
 import path from "path";
-import { listFiles, scan } from "./scan";
+import { listFiles, removedReferences, scan } from "./scan";
 import { addedLines, buildSuggestions, diffSuggestions } from "./suggestions";
 
 async function run() {
@@ -27,22 +27,25 @@ async function run() {
   const { owner, repo } = github.context.repo;
 
   // Ask the API for the PR's files instead of `git diff`, so a shallow checkout is enough.
-  const prFiles = pr
+  const allPrFiles = pr
     ? (await octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 })).filter(
-        (f) => f.status !== "removed" && languageFor(f.filename),
+        (f) => languageFor(f.filename) || (f.previous_filename && languageFor(f.previous_filename)),
       )
     : [];
+  const prFiles = allPrFiles.filter((f) => f.status !== "removed" && languageFor(f.filename));
   const files = pr ? prFiles.map((f) => f.filename) : listFiles(dir);
   core.info(`Scanning ${files.length} file(s)`);
 
   const references = await scan(dir, files, wrappers);
   const flags = await fetchFlags({ host, projectId, apiKey });
-  const findings = runChecks(references, flags);
+  const removed = pr ? await findRemovedReferences(octokit, owner, repo, pr.base.sha, allPrFiles, references, dir, wrappers) : [];
+  const findings = runChecks(references, flags, removed);
   const sha = pr?.head.sha ?? github.context.sha;
   const blobUrl = `${github.context.serverUrl}/${owner}/${repo}/blob/${sha}`;
   // Re-running this run re-reads PostHog, so a flag fixed there turns the check green without a push.
   const rerunUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
-  const body = renderMarkdown(findings, references, { host, projectId, blobUrl, sha, rerunUrl });
+  const baseBlobUrl = pr ? `${github.context.serverUrl}/${owner}/${repo}/blob/${pr.base.sha}` : undefined;
+  const body = renderMarkdown(findings, references, { host, projectId, blobUrl, baseBlobUrl, sha, rerunUrl });
 
   await core.summary.addRaw(body).write();
   if (pr && shouldComment) await upsertComment(octokit, owner, repo, pr.number, body);
@@ -75,6 +78,41 @@ async function upsertComment(
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
   } else {
     await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+  }
+}
+
+// Compares each changed file with its version on the base branch, read through the API so a
+// shallow checkout is enough. Renamed files are compared with their previous path.
+async function findRemovedReferences(
+  octokit: ReturnType<typeof github.getOctokit>,
+  owner: string,
+  repo: string,
+  baseSha: string,
+  files: { filename: string; previous_filename?: string; status: string }[],
+  references: FlagReference[],
+  dir: string,
+  wrappers: string[],
+): Promise<FlagReference[]> {
+  const removed: FlagReference[] = [];
+  for (const file of files) {
+    if (file.status === "added") continue;
+    const basePath = file.previous_filename ?? file.filename;
+    const baseSource = await fileAt(octokit, owner, repo, basePath, baseSha);
+    if (baseSource === null) continue;
+    const headSource = file.status === "removed" ? null : fs.readFileSync(path.join(dir, file.filename), "utf8");
+    const baseRefs = await extractReferences(baseSource, basePath, { wrappers });
+    const headRefs = references.filter((r) => r.file === file.filename);
+    removed.push(...removedReferences(baseRefs, baseSource, headRefs, headSource));
+  }
+  return removed;
+}
+
+async function fileAt(octokit: ReturnType<typeof github.getOctokit>, owner: string, repo: string, filePath: string, ref: string): Promise<string | null> {
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path: filePath, ref });
+    return "content" in data && typeof data.content === "string" ? Buffer.from(data.content, "base64").toString("utf8") : null;
+  } catch {
+    return null;
   }
 }
 

@@ -9,6 +9,8 @@ export interface ReportContext {
   // Used to link file:line references in a PR comment, e.g. https://github.com/o/r/blob/<sha>
   blobUrl?: string;
   sha?: string;
+  // Base version of the PR, for calls the PR removed.
+  baseBlobUrl?: string;
   // The CI run, whose "Re-run" re-checks the PR against PostHog's current flags.
   rerunUrl?: string;
 }
@@ -74,9 +76,10 @@ export interface Annotation {
 }
 
 // One annotation per reference, so each call site gets marked in the PR's "Files changed" tab.
+// Removed calls have no line in the PR's version of the file to annotate.
 export function annotations(findings: Finding[]): Annotation[] {
   return findings.flatMap((f) =>
-    f.references.map((r) => ({
+    f.references.filter((r) => !r.removed).map((r) => ({
       severity: f.severity,
       title: `PostHog flag: ${f.key ?? r.expression}`,
       message: f.message.replace(/`/g, ""),
@@ -112,6 +115,7 @@ function cell(text: string): string {
 }
 
 function location(ref: FlagReference, context: ReportContext): string {
-  const label = `\`${ref.file}:${ref.line}\``;
-  return context.blobUrl ? `[${label}](${context.blobUrl}/${ref.file}#L${ref.line})` : label;
+  const label = `\`${ref.file}:${ref.line}\`${ref.removed ? " (removed)" : ""}`;
+  const blob = ref.removed ? context.baseBlobUrl : context.blobUrl;
+  return blob ? `[${label}](${blob}/${ref.file}#L${ref.line})` : label;
 }
