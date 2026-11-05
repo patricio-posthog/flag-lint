@@ -61,3 +61,37 @@ async function fetchAll(config: PostHogConfig, extraQuery: string): Promise<Flag
   }
   return flags;
 }
+
+export interface Reach {
+  users: number;
+  evaluations: number;
+}
+
+// Distinct users and evaluations per flag over the last 7 days, from `$feature_flag_called` events.
+// Keys come from the project's own flag list, but are still checked against the flag key charset
+// before going into the query.
+export async function fetchReach(config: PostHogConfig, keys: string[]): Promise<Map<string, Reach>> {
+  const safe = keys.filter((k) => /^[a-zA-Z0-9_-]+$/.test(k));
+  const reach = new Map<string, Reach>();
+  if (safe.length === 0) return reach;
+  const query = `
+    SELECT properties.$feature_flag AS flag, count(DISTINCT person_id) AS users, count() AS evaluations
+    FROM events
+    WHERE event = '$feature_flag_called'
+      AND timestamp > now() - INTERVAL 7 DAY
+      AND properties.$feature_flag IN (${safe.map((k) => `'${k}'`).join(", ")})
+    GROUP BY flag`;
+  const host = config.host.replace(/\/+$/, "");
+  const response = await fetch(`${host}/api/projects/${encodeURIComponent(config.projectId)}/query/`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`PostHog query API ${response.status}: ${body.slice(0, 300)}`);
+  }
+  const data = (await response.json()) as { results: [string, number, number][] };
+  for (const [flag, users, evaluations] of data.results) reach.set(flag, { users, evaluations });
+  return reach;
+}

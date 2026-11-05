@@ -1,5 +1,6 @@
 import type { Finding } from "./checks";
 import type { FlagReference } from "./extract";
+import type { Reach } from "./posthog";
 
 export const COMMENT_MARKER = "<!-- flag-lint -->";
 
@@ -11,6 +12,8 @@ export interface ReportContext {
   sha?: string;
   // Base version of the PR, for calls the PR removed.
   baseBlobUrl?: string;
+  // Last-7-day reach of every flag the PR touches that exists in PostHog.
+  reach?: (Reach & { key: string; flagId: number })[];
   // The CI run, whose "Re-run" re-checks the PR against PostHog's current flags.
   rerunUrl?: string;
 }
@@ -30,7 +33,7 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
     return lines.join("\n") + "\n";
   }
   if (findings.length === 0) {
-    lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
+    lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...reachSection(context, flagsUrl), footer);
     return lines.join("\n") + "\n";
   }
 
@@ -50,8 +53,29 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
   }
 
   const recheck = context.rerunUrl ? [`[🔄 Re-check](${context.rerunUrl}) after fixing flags in PostHog`] : [];
-  lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", footer);
+  lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", ...reachSection(context, flagsUrl), footer);
   return lines.join("\n") + "\n";
+}
+
+// Who this change can affect: how many users each flag in the PR reached in production lately.
+function reachSection(context: ReportContext, flagsUrl: string): string[] {
+  if (!context.reach || context.reach.length === 0) return [];
+  const rows = [...context.reach].sort((a, b) => b.users - a.users || a.key.localeCompare(b.key));
+  return [
+    "#### 👥 Who this PR can affect",
+    "Users and evaluations in the last 7 days, for every flag this PR touches.",
+    "",
+    "| Flag | Users | Evaluations |",
+    "|---|---:|---:|",
+    ...rows.map((r) => `| [${code(r.key)}](${flagsUrl}/${r.flagId}) | ${compact(r.users)} | ${compact(r.evaluations)} |`),
+    "",
+  ];
+}
+
+function compact(n: number): string {
+  if (n >= 1_000_000) return `${+(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${+(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 export function renderText(findings: Finding[], scannedReferences: number): string {

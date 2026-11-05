@@ -25,6 +25,9 @@ inputs:
   suggestions:
     description: Suggest a one-click fix on the PR diff for likely typos in flag keys and variants
     default: "true"
+  reach:
+    description: Show how many users each flag in the PR reached in the last 7 days (needs the query:read scope)
+    default: "true"
   github-token:
     description: Token used to read the PR and comment on it
     default: ${{ github.token }}

@@ -2,7 +2,7 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { runChecks } from "./checks";
 import { extractReferences, languageFor, type FlagReference } from "./extract";
-import { fetchFlags } from "./posthog";
+import { fetchFlags, fetchReach, type Flag, type PostHogConfig } from "./posthog";
 import { annotations, COMMENT_MARKER, renderMarkdown } from "./report";
 import fs from "fs";
 import path from "path";
@@ -18,6 +18,7 @@ async function run() {
   const shouldComment = core.getBooleanInput("comment");
   const shouldAnnotate = core.getBooleanInput("annotations");
   const shouldSuggest = core.getBooleanInput("suggestions");
+  const shouldShowReach = core.getBooleanInput("reach");
   const token = core.getInput("github-token");
   core.setSecret(apiKey);
 
@@ -45,7 +46,8 @@ async function run() {
   // Re-running this run re-reads PostHog, so a flag fixed there turns the check green without a push.
   const rerunUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
   const baseBlobUrl = pr ? `${github.context.serverUrl}/${owner}/${repo}/blob/${pr.base.sha}` : undefined;
-  const body = renderMarkdown(findings, references, { host, projectId, blobUrl, baseBlobUrl, sha, rerunUrl });
+  const reach = shouldShowReach ? await reachOf([...references, ...removed], flags, { host, projectId, apiKey }) : undefined;
+  const body = renderMarkdown(findings, references, { host, projectId, blobUrl, baseBlobUrl, sha, rerunUrl, reach });
 
   await core.summary.addRaw(body).write();
   if (pr && shouldComment) await upsertComment(octokit, owner, repo, pr.number, body);
@@ -78,6 +80,21 @@ async function upsertComment(
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
   } else {
     await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+  }
+}
+
+// Every flag the PR touches (kept or removed) that exists in PostHog, with its recent reach.
+// Flags with no events show as zero. The query needs `query:read`; without it the section is skipped.
+async function reachOf(refs: FlagReference[], flags: Flag[], config: PostHogConfig) {
+  const byKey = new Map(flags.map((f) => [f.key, f]));
+  const touched = [...new Set(refs.flatMap((r) => (r.key !== null && byKey.has(r.key) ? [r.key] : [])))];
+  if (touched.length === 0) return undefined;
+  try {
+    const reach = await fetchReach(config, touched);
+    return touched.map((key) => ({ key, flagId: byKey.get(key)!.id, ...(reach.get(key) ?? { users: 0, evaluations: 0 }) }));
+  } catch (error) {
+    core.warning(`Skipping reach: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
   }
 }
 

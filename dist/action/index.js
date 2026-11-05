@@ -29980,6 +29980,7 @@ async function run() {
     const shouldComment = core.getBooleanInput("comment");
     const shouldAnnotate = core.getBooleanInput("annotations");
     const shouldSuggest = core.getBooleanInput("suggestions");
+    const shouldShowReach = core.getBooleanInput("reach");
     const token = core.getInput("github-token");
     core.setSecret(apiKey);
     const dir = process.env.GITHUB_WORKSPACE ?? process.cwd();
@@ -30002,7 +30003,8 @@ async function run() {
     // Re-running this run re-reads PostHog, so a flag fixed there turns the check green without a push.
     const rerunUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
     const baseBlobUrl = pr ? `${github.context.serverUrl}/${owner}/${repo}/blob/${pr.base.sha}` : undefined;
-    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, baseBlobUrl, sha, rerunUrl });
+    const reach = shouldShowReach ? await reachOf([...references, ...removed], flags, { host, projectId, apiKey }) : undefined;
+    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, baseBlobUrl, sha, rerunUrl, reach });
     await core.summary.addRaw(body).write();
     if (pr && shouldComment)
         await upsertComment(octokit, owner, repo, pr.number, body);
@@ -30029,6 +30031,22 @@ async function upsertComment(octokit, owner, repo, issueNumber, body) {
     }
     else {
         await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+    }
+}
+// Every flag the PR touches (kept or removed) that exists in PostHog, with its recent reach.
+// Flags with no events show as zero. The query needs `query:read`; without it the section is skipped.
+async function reachOf(refs, flags, config) {
+    const byKey = new Map(flags.map((f) => [f.key, f]));
+    const touched = [...new Set(refs.flatMap((r) => (r.key !== null && byKey.has(r.key) ? [r.key] : [])))];
+    if (touched.length === 0)
+        return undefined;
+    try {
+        const reach = await (0, posthog_1.fetchReach)(config, touched);
+        return touched.map((key) => ({ key, flagId: byKey.get(key).id, ...(reach.get(key) ?? { users: 0, evaluations: 0 }) }));
+    }
+    catch (error) {
+        core.warning(`Skipping reach: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
     }
 }
 // Compares each changed file with its version on the base branch, read through the API so a
@@ -30571,6 +30589,7 @@ function pythonStringValue(node) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchFlags = fetchFlags;
+exports.fetchReach = fetchReach;
 // The list endpoint hides archived flags unless `archived` is passed, so fetch both sets.
 // Staleness comes from PostHog's own `active=STALE` filter rather than being recomputed here.
 async function fetchFlags(config) {
@@ -30615,6 +30634,36 @@ async function fetchAll(config, extraQuery) {
     }
     return flags;
 }
+// Distinct users and evaluations per flag over the last 7 days, from `$feature_flag_called` events.
+// Keys come from the project's own flag list, but are still checked against the flag key charset
+// before going into the query.
+async function fetchReach(config, keys) {
+    const safe = keys.filter((k) => /^[a-zA-Z0-9_-]+$/.test(k));
+    const reach = new Map();
+    if (safe.length === 0)
+        return reach;
+    const query = `
+    SELECT properties.$feature_flag AS flag, count(DISTINCT person_id) AS users, count() AS evaluations
+    FROM events
+    WHERE event = '$feature_flag_called'
+      AND timestamp > now() - INTERVAL 7 DAY
+      AND properties.$feature_flag IN (${safe.map((k) => `'${k}'`).join(", ")})
+    GROUP BY flag`;
+    const host = config.host.replace(/\/+$/, "");
+    const response = await fetch(`${host}/api/projects/${encodeURIComponent(config.projectId)}/query/`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
+    });
+    if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`PostHog query API ${response.status}: ${body.slice(0, 300)}`);
+    }
+    const data = (await response.json());
+    for (const [flag, users, evaluations] of data.results)
+        reach.set(flag, { users, evaluations });
+    return reach;
+}
 
 
 /***/ }),
@@ -30645,7 +30694,7 @@ function renderMarkdown(findings, references, context) {
         return lines.join("\n") + "\n";
     }
     if (findings.length === 0) {
-        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", footer);
+        lines.push(`✅ ${references.length === 1 ? "The flag reference matches" : `All ${scope} match`} your PostHog project.`, "", ...reachSection(context, flagsUrl), footer);
         return lines.join("\n") + "\n";
     }
     const counts = [errors.length && `**${plural(errors.length, "problem")}**`, warnings.length && plural(warnings.length, "warning")];
@@ -30663,8 +30712,30 @@ function renderMarkdown(findings, references, context) {
         lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
     }
     const recheck = context.rerunUrl ? [`[🔄 Re-check](${context.rerunUrl}) after fixing flags in PostHog`] : [];
-    lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", footer);
+    lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", ...reachSection(context, flagsUrl), footer);
     return lines.join("\n") + "\n";
+}
+// Who this change can affect: how many users each flag in the PR reached in production lately.
+function reachSection(context, flagsUrl) {
+    if (!context.reach || context.reach.length === 0)
+        return [];
+    const rows = [...context.reach].sort((a, b) => b.users - a.users || a.key.localeCompare(b.key));
+    return [
+        "#### 👥 Who this PR can affect",
+        "Users and evaluations in the last 7 days, for every flag this PR touches.",
+        "",
+        "| Flag | Users | Evaluations |",
+        "|---|---:|---:|",
+        ...rows.map((r) => `| [${code(r.key)}](${flagsUrl}/${r.flagId}) | ${compact(r.users)} | ${compact(r.evaluations)} |`),
+        "",
+    ];
+}
+function compact(n) {
+    if (n >= 1_000_000)
+        return `${+(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000)
+        return `${+(n / 1_000).toFixed(1)}k`;
+    return String(n);
 }
 function renderText(findings, scannedReferences) {
     if (findings.length === 0)
