@@ -102,3 +102,11 @@ describe("finding links", () => {
     );
   });
 });
+
+describe("re-check link", () => {
+  it("links to the CI run next to the problems", () => {
+    const references = [ref("nope", "a.ts", 1)];
+    const markdown = renderMarkdown(runChecks(references, []), references, { ...context, rerunUrl: "https://github.com/o/r/actions/runs/42" });
+    expect(markdown).toContain("· [🔄 Re-check](https://github.com/o/r/actions/runs/42) after fixing flags in PostHog");
+  });
+});

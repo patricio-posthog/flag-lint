@@ -30,6 +30,7 @@ function runChecks(references, flags) {
                 key,
                 message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
                 create: suggestion ? undefined : { variants: inferVariants(refs) },
+                fix: suggestion ? { from: key, to: suggestion } : undefined,
                 references: refs,
             });
         }
@@ -96,6 +97,7 @@ function variantFindings(flag, refs) {
             message: suggestion
                 ? `Variant \`${value}\` doesn't exist. Did you mean \`${suggestion}\`?`
                 : `Variant \`${value}\` doesn't exist. Variants: ${flag.variants.map((v) => `\`${v}\``).join(", ")}`,
+            fix: suggestion ? { from: value, to: suggestion } : undefined,
             references: at,
         };
     });
@@ -619,7 +621,8 @@ function renderMarkdown(findings, references, context) {
         ];
         lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
     }
-    lines.push("", `[View flags](${flagsUrl})`, "", footer);
+    const recheck = context.rerunUrl ? [`[🔄 Re-check](${context.rerunUrl}) after fixing flags in PostHog`] : [];
+    lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", footer);
     return lines.join("\n") + "\n";
 }
 function renderText(findings, scannedReferences) {

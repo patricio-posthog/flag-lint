@@ -29957,6 +29957,9 @@ var __importStar = (this && this.__importStar) || function (mod) {
     __setModuleDefault(result, mod);
     return result;
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -29964,7 +29967,10 @@ const checks_1 = __nccwpck_require__(2122);
 const extract_1 = __nccwpck_require__(6542);
 const posthog_1 = __nccwpck_require__(6139);
 const report_1 = __nccwpck_require__(665);
+const fs_1 = __importDefault(__nccwpck_require__(9896));
+const path_1 = __importDefault(__nccwpck_require__(6928));
 const scan_1 = __nccwpck_require__(4798);
+const suggestions_1 = __nccwpck_require__(6462);
 async function run() {
     const apiKey = core.getInput("api-key", { required: true });
     const projectId = core.getInput("project-id", { required: true });
@@ -29973,6 +29979,7 @@ async function run() {
     const failOnError = core.getBooleanInput("fail-on-error");
     const shouldComment = core.getBooleanInput("comment");
     const shouldAnnotate = core.getBooleanInput("annotations");
+    const shouldSuggest = core.getBooleanInput("suggestions");
     const token = core.getInput("github-token");
     core.setSecret(apiKey);
     const dir = process.env.GITHUB_WORKSPACE ?? process.cwd();
@@ -29980,21 +29987,27 @@ async function run() {
     const octokit = github.getOctokit(token);
     const { owner, repo } = github.context.repo;
     // Ask the API for the PR's files instead of `git diff`, so a shallow checkout is enough.
-    const files = pr
-        ? (await octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 }))
-            .filter((f) => f.status !== "removed" && (0, extract_1.languageFor)(f.filename))
-            .map((f) => f.filename)
-        : (0, scan_1.listFiles)(dir);
+    const prFiles = pr
+        ? (await octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 })).filter((f) => f.status !== "removed" && (0, extract_1.languageFor)(f.filename))
+        : [];
+    const files = pr ? prFiles.map((f) => f.filename) : (0, scan_1.listFiles)(dir);
     core.info(`Scanning ${files.length} file(s)`);
     const references = await (0, scan_1.scan)(dir, files, wrappers);
     const flags = await (0, posthog_1.fetchFlags)({ host, projectId, apiKey });
     const findings = (0, checks_1.runChecks)(references, flags);
     const sha = pr?.head.sha ?? github.context.sha;
     const blobUrl = `${github.context.serverUrl}/${owner}/${repo}/blob/${sha}`;
-    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, sha });
+    // Re-running this run re-reads PostHog, so a flag fixed there turns the check green without a push.
+    const rerunUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
+    const body = (0, report_1.renderMarkdown)(findings, references, { host, projectId, blobUrl, sha, rerunUrl });
     await core.summary.addRaw(body).write();
     if (pr && shouldComment)
         await upsertComment(octokit, owner, repo, pr.number, body);
+    if (pr && shouldSuggest) {
+        const changed = new Map(prFiles.map((f) => [f.filename, (0, suggestions_1.addedLines)(f.patch)]));
+        const lineOf = (file, line) => fs_1.default.readFileSync(path_1.default.join(dir, file), "utf8").split("\n")[line - 1];
+        await syncSuggestions(octokit, owner, repo, pr.number, pr.head.sha, (0, suggestions_1.buildSuggestions)(findings, lineOf, changed));
+    }
     if (shouldAnnotate) {
         for (const a of (0, report_1.annotations)(findings)) {
             const props = { title: a.title, file: a.file, startLine: a.line, startColumn: a.column };
@@ -30013,6 +30026,22 @@ async function upsertComment(octokit, owner, repo, issueNumber, body) {
     }
     else {
         await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+    }
+}
+async function syncSuggestions(octokit, owner, repo, pullNumber, commitId, wanted) {
+    const existing = await octokit.paginate(octokit.rest.pulls.listReviewComments, { owner, repo, pull_number: pullNumber, per_page: 100 });
+    const { create, remove } = (0, suggestions_1.diffSuggestions)(wanted, existing.map((c) => ({ id: c.id, path: c.path, line: c.line ?? null, body: c.body })));
+    for (const id of remove)
+        await octokit.rest.pulls.deleteReviewComment({ owner, repo, comment_id: id });
+    if (create.length > 0) {
+        await octokit.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: pullNumber,
+            commit_id: commitId,
+            event: "COMMENT",
+            comments: create.map((s) => ({ path: s.path, line: s.line, side: "RIGHT", body: s.body })),
+        });
     }
 }
 run().catch((error) => core.setFailed(error instanceof Error ? error.message : String(error)));
@@ -30041,6 +30070,7 @@ function runChecks(references, flags) {
                 key,
                 message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
                 create: suggestion ? undefined : { variants: inferVariants(refs) },
+                fix: suggestion ? { from: key, to: suggestion } : undefined,
                 references: refs,
             });
         }
@@ -30107,6 +30137,7 @@ function variantFindings(flag, refs) {
             message: suggestion
                 ? `Variant \`${value}\` doesn't exist. Did you mean \`${suggestion}\`?`
                 : `Variant \`${value}\` doesn't exist. Variants: ${flag.variants.map((v) => `\`${v}\``).join(", ")}`,
+            fix: suggestion ? { from: value, to: suggestion } : undefined,
             references: at,
         };
     });
@@ -30576,7 +30607,8 @@ function renderMarkdown(findings, references, context) {
         ];
         lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
     }
-    lines.push("", `[View flags](${flagsUrl})`, "", footer);
+    const recheck = context.rerunUrl ? [`[🔄 Re-check](${context.rerunUrl}) after fixing flags in PostHog`] : [];
+    lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", footer);
     return lines.join("\n") + "\n";
 }
 function renderText(findings, scannedReferences) {
@@ -30673,6 +30705,80 @@ async function scan(dir, files, wrappers = []) {
         references.push(...(await (0, extract_1.extractReferences)(source, file, { wrappers })));
     }
     return references;
+}
+
+
+/***/ }),
+
+/***/ 6462:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SUGGESTION_MARKER = void 0;
+exports.addedLines = addedLines;
+exports.buildSuggestions = buildSuggestions;
+exports.diffSuggestions = diffSuggestions;
+exports.SUGGESTION_MARKER = "<!-- flag-lint-suggestion -->";
+// Line numbers on the new side of a unified diff patch that the PR added or changed.
+// GitHub only accepts review comments (and so suggestions) on lines inside the diff.
+function addedLines(patch) {
+    const lines = new Set();
+    let line = 0;
+    for (const row of (patch ?? "").split("\n")) {
+        const hunk = row.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (hunk) {
+            line = Number(hunk[1]);
+        }
+        else if (row.startsWith("+")) {
+            lines.add(line++);
+        }
+        else if (!row.startsWith("-") && !row.startsWith("\\")) {
+            line++;
+        }
+    }
+    return lines;
+}
+// One suggestion per typo'd string literal on a line the PR touched, replacing just the quoted
+// value so the rest of the line stays as written.
+function buildSuggestions(findings, lineOf, changed) {
+    const suggestions = [];
+    for (const finding of findings) {
+        if (!finding.fix)
+            continue;
+        const { from, to } = finding.fix;
+        for (const ref of finding.references) {
+            if (!changed.get(ref.file)?.has(ref.line))
+                continue;
+            const original = lineOf(ref.file, ref.line);
+            if (original === undefined)
+                continue;
+            const quoted = new RegExp(`(["'\`])${escapeRegExp(from)}\\1`);
+            const fixed = original.replace(quoted, (_, quote) => `${quote}${to}${quote}`);
+            if (fixed === original)
+                continue;
+            suggestions.push({
+                path: ref.file,
+                line: ref.line,
+                body: [exports.SUGGESTION_MARKER, `**flag-lint:** \`${from}\` looks like a typo for \`${to}\`.`, "", "```suggestion", fixed, "```"].join("\n"),
+            });
+        }
+    }
+    return suggestions;
+}
+function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+// What to post and what to delete so the PR's flag-lint suggestions match the current findings,
+// without re-posting identical ones on every run.
+function diffSuggestions(wanted, existing) {
+    const ours = existing.filter((c) => c.body.includes(exports.SUGGESTION_MARKER));
+    const same = (a, b) => a.path === b.path && a.line === b.line && a.body === b.body;
+    return {
+        create: wanted.filter((w) => !ours.some((c) => same(w, c))),
+        remove: ours.filter((c) => !wanted.some((w) => same(w, c))).map((c) => c.id),
+    };
 }
 
 

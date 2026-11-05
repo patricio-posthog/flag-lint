@@ -9,6 +9,8 @@ export interface ReportContext {
   // Used to link file:line references in a PR comment, e.g. https://github.com/o/r/blob/<sha>
   blobUrl?: string;
   sha?: string;
+  // The CI run, whose "Re-run" re-checks the PR against PostHog's current flags.
+  rerunUrl?: string;
 }
 
 export function renderMarkdown(findings: Finding[], references: FlagReference[], context: ReportContext): string {
@@ -45,7 +47,8 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
     lines.push(`| ${icon} | ${flag} | ${cell([finding.message, ...links].join(" · "))} | ${where} |`);
   }
 
-  lines.push("", `[View flags](${flagsUrl})`, "", footer);
+  const recheck = context.rerunUrl ? [`[🔄 Re-check](${context.rerunUrl}) after fixing flags in PostHog`] : [];
+  lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", footer);
   return lines.join("\n") + "\n";
 }
 

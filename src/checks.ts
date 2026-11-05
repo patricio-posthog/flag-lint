@@ -11,6 +11,8 @@ export interface Finding {
   flagId?: number;
   // Set for missing flags that aren't a likely typo: what a "create it" link should prefill.
   create?: { variants: string[] | null };
+  // A likely typo: the string literal at each reference should read `to` instead of `from`.
+  fix?: { from: string; to: string };
   // Extra links, relative to the project (e.g. `experiments/12`).
   links?: { label: string; path: string }[];
   message: string;
@@ -31,6 +33,7 @@ export function runChecks(references: FlagReference[], flags: Flag[]): Finding[]
         key,
         message: suggestion ? `Doesn't exist. Did you mean \`${suggestion}\`?` : "Doesn't exist in this project",
         create: suggestion ? undefined : { variants: inferVariants(refs) },
+        fix: suggestion ? { from: key, to: suggestion } : undefined,
         references: refs,
       });
     } else if (flag.archived) {
@@ -95,6 +98,7 @@ function variantFindings(flag: Flag, refs: FlagReference[]): Finding[] {
       message: suggestion
         ? `Variant \`${value}\` doesn't exist. Did you mean \`${suggestion}\`?`
         : `Variant \`${value}\` doesn't exist. Variants: ${flag.variants.map((v) => `\`${v}\``).join(", ")}`,
+      fix: suggestion ? { from: value, to: suggestion } : undefined,
       references: at,
     };
   });
