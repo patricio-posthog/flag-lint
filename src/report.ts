@@ -53,8 +53,39 @@ export function renderMarkdown(findings: Finding[], references: FlagReference[],
   }
 
   const recheck = context.rerunUrl ? [`[🔄 Re-check](${context.rerunUrl}) after fixing flags in PostHog`] : [];
-  lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", ...reachSection(context, flagsUrl), footer);
+  lines.push("", [`[View flags](${flagsUrl})`, ...recheck].join(" · "), "", ...mcpSection(findings, context.projectId), ...reachSection(context, flagsUrl), footer);
   return lines.join("\n") + "\n";
+}
+
+// The same fixes as the "Create it" links, written as one prompt for the PostHog MCP server.
+// Only fixes that clearly belong in PostHog: typos and archived flags are fixed in code instead.
+export function mcpPrompt(findings: Finding[], projectId: string): string | null {
+  const steps: string[] = [];
+  for (const f of findings) {
+    if (!f.key) continue;
+    if (f.kind === "missing" && f.create) {
+      steps.push(
+        f.create.variants
+          ? `Create a multivariate feature flag with key \`${f.key}\` and the variants ${list(f.create.variants)}, split evenly. Leave it disabled.`
+          : `Create a boolean feature flag with key \`${f.key}\`. Leave it disabled.`,
+      );
+    } else if (f.kind === "runtime") {
+      steps.push(`Change the evaluation runtime of the feature flag \`${f.key}\` so it evaluates in both client and server SDKs.`);
+    }
+  }
+  if (steps.length === 0) return null;
+  return [`In my PostHog project ${projectId}, please:`, ...steps.map((s, i) => `${i + 1}. ${s}`)].join("\n");
+}
+
+function mcpSection(findings: Finding[], projectId: string): string[] {
+  const prompt = mcpPrompt(findings, projectId);
+  if (!prompt) return [];
+  return ["#### 🤖 Or ask the PostHog MCP", "Paste this into an assistant connected to the PostHog MCP server:", "", "```text", prompt, "```", ""];
+}
+
+function list(items: string[]): string {
+  const quoted = items.map((i) => `\`${i}\``);
+  return quoted.length === 1 ? quoted[0] : `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
 }
 
 // Who this change can affect: how many users each flag in the PR reached in production lately.
